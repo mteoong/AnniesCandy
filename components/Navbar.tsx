@@ -10,7 +10,6 @@ const ENTRY_ITEMS = [
   { label: 'Deductions', href: '/deductions' },
   { label: 'Weekly Summary', href: '/weekly-summary' },
   { label: 'SSS', href: '/sss' },
-  { label: 'Config', href: '/config' },
 ]
 
 const DELIVERY_ITEMS = [

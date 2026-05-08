@@ -917,7 +917,7 @@ export function DashboardPage({
                     <div key={p.id}>
                       <div className="flex items-center justify-between mb-0.5 gap-1">
                         <span className="text-xs font-sans text-stone-600 truncate min-w-0">
-                          {getProductAbbr(p)}
+                          {p.name}
                         </span>
                         <div className="flex items-center gap-0.5 flex-shrink-0">
                           <span className={cn('text-xs font-mono font-semibold tabular-nums', low ? 'text-red-600' : 'text-stone-700')}>
@@ -976,7 +976,7 @@ export function DashboardPage({
                     return (
                       <div key={p.id} className="flex items-center justify-between gap-1">
                         <span className="text-xs font-sans text-stone-600 truncate min-w-0">
-                          {getProductAbbr(p)}
+                          {p.name}
                         </span>
                         {isEditing40x1 ? (
                           <input
@@ -1416,11 +1416,11 @@ function EditOrderDialog({
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-sm max-h-[90svh] grid-rows-[auto_1fr_auto]">
         <DialogHeader>
           <DialogTitle>Edit Order</DialogTitle>
         </DialogHeader>
-        <div className="border border-stone-100 rounded-xl overflow-hidden">
+        <div className="min-h-0 overflow-y-auto border border-stone-100 rounded-xl">
           <div className="grid grid-cols-[1fr_56px_100px] px-4 py-2 bg-stone-50 border-b border-stone-100 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans">
             <span>Product</span>
             <span className="text-center">40x1</span>
@@ -1440,7 +1440,7 @@ function EditOrderDialog({
                 )}
               >
                 <span className={cn('text-sm font-sans', isSet ? 'text-stone-800 font-medium' : 'text-stone-500')}>
-                  {p.name}
+                  {getProductAbbr(p)}
                 </span>
                 {isSpread ? (
                   <div className="text-center text-stone-300 text-xs select-none">—</div>
@@ -2237,14 +2237,14 @@ function StopEditDialog({
 
   return (
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="max-w-sm">
+      <DialogContent className="max-w-sm max-h-[90svh] grid-rows-[auto_auto_1fr_auto]">
         <DialogHeader>
           <DialogTitle>Edit Order</DialogTitle>
         </DialogHeader>
         <p className="text-xs text-stone-400 font-sans -mt-1">
           Change <span className="font-medium text-stone-600">Ordered</span> to update the order, or change <span className="font-medium text-stone-600">Deliver</span> to set what goes on this truck. Deliver is capped to Ordered.
         </p>
-        <div className="border border-stone-100 rounded-xl overflow-hidden">
+        <div className="min-h-0 overflow-y-auto border border-stone-100 rounded-xl">
           <div className="grid grid-cols-[1fr_44px_72px_72px] px-4 py-2 bg-stone-50 border-b border-stone-100 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans gap-2">
             <span>Product</span>
             <span className="text-center">40x1</span>

@@ -37,7 +37,7 @@ const CATEGORIES: { id: Category; label: string }[] = [
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
-type DailyRecord = { employee_id: number; date: string; daily_pay: number; holiday: string | null }
+type DailyRecord = { employee_id: number; date: string; daily_pay: number; holiday: string | null; nightshift: boolean }
 
 type JobSummaryRow = {
   job: string
@@ -215,13 +215,13 @@ function SummaryModal({
 
     const body = [
       ...rows.map((r) => [
-        r.job, r.employee_count, r.total_nightshift, r.total_holiday,
+        r.job, r.employee_count, fpPdf(r.total_nightshift), fpPdf(r.total_holiday),
         fpPdf(r.total_gross), fpPdf(r.sss), fpPdf(r.philhealth), fpPdf(r.pagibig),
         fpPdf(r.sss_loan), fpPdf(r.pagibig_loan), fpPdf(r.cash_advance),
         fpPdf(r.canteen), fpPdf(r.others), fpPdf(r.total_deduction), fpPdf(r.total_net),
       ]),
       [
-        'TOTAL', totals.employee_count, totals.total_nightshift, totals.total_holiday,
+        'TOTAL', totals.employee_count, fpPdf(totals.total_nightshift), fpPdf(totals.total_holiday),
         fpPdf(totals.total_gross), fpPdf(totals.sss), fpPdf(totals.philhealth), fpPdf(totals.pagibig),
         fpPdf(totals.sss_loan), fpPdf(totals.pagibig_loan), fpPdf(totals.cash_advance),
         fpPdf(totals.canteen), fpPdf(totals.others), fpPdf(totals.total_deduction), fpPdf(totals.total_net),
@@ -229,12 +229,12 @@ function SummaryModal({
     ]
 
     // A4 landscape usable width ≈ 269mm  (297 - 2×14 margins)
-    // 40+10+11+11+20+17+19+16+14+14+15+15+13+20+20 = 255mm
+    // 36+10+17+17+20+17+19+16+14+14+15+15+13+20+20 = 263mm
     const columnStyles: Record<number, object> = {
-      0: { cellWidth: 40, halign: 'left' },
+      0: { cellWidth: 36, halign: 'left' },
       1: { cellWidth: 10, halign: 'center' },
-      2: { cellWidth: 11, halign: 'center' },
-      3: { cellWidth: 11, halign: 'center' },
+      2: { cellWidth: 17, halign: 'right' },
+      3: { cellWidth: 17, halign: 'right' },
       4: { cellWidth: 20, halign: 'right' },
       5: { cellWidth: 17, halign: 'right' },
       6: { cellWidth: 19, halign: 'right' },
@@ -294,8 +294,8 @@ function SummaryModal({
               <tr>
                 <th className={cn(TH, 'text-white text-left')}>Job Position</th>
                 <th className={cn(TH, 'text-white text-center')}>Emp</th>
-                <th className={cn(TH, 'text-white text-center')}>PM Shift</th>
-                <th className={cn(TH, 'text-white text-center')}>Holiday</th>
+                <th className={cn(TH, 'text-white text-right')}>PM Shift</th>
+                <th className={cn(TH, 'text-white text-right')}>Holiday</th>
                 <th className={cn(TH, 'text-white text-right')}>Gross Total</th>
                 <th className={cn(TH, 'text-white text-right')}>SSS Cont.</th>
                 <th className={cn(TH, 'text-white text-right')}>PhilHealth</th>
@@ -314,8 +314,8 @@ function SummaryModal({
                 <tr key={r.job} className="hover:bg-stone-50">
                   <td className={cn(TD, 'font-sans font-medium text-stone-800')}>{r.job}</td>
                   <td className={cn(TD, 'text-center text-stone-600')}>{r.employee_count}</td>
-                  <td className={cn(TD, 'text-center text-stone-500')}>{r.total_nightshift || '—'}</td>
-                  <td className={cn(TD, 'text-center text-stone-500')}>{r.total_holiday || '—'}</td>
+                  <td className={cn(TD, 'text-right text-stone-500')}>{fp(r.total_nightshift)}</td>
+                  <td className={cn(TD, 'text-right text-stone-500')}>{fp(r.total_holiday)}</td>
                   <td className={cn(TD, 'text-right text-stone-800 font-semibold')}>{fp(r.total_gross)}</td>
                   <td className={cn(TD, 'text-right text-red-600')}>{fp(r.sss)}</td>
                   <td className={cn(TD, 'text-right text-red-600')}>{fp(r.philhealth)}</td>
@@ -333,8 +333,8 @@ function SummaryModal({
               <tr className="bg-stone-100 font-semibold">
                 <td className={cn(TD, 'font-sans font-bold text-stone-900')}>TOTAL</td>
                 <td className={cn(TD, 'text-center text-stone-800')}>{totals.employee_count}</td>
-                <td className={cn(TD, 'text-center text-stone-700')}>{totals.total_nightshift || '—'}</td>
-                <td className={cn(TD, 'text-center text-stone-700')}>{totals.total_holiday || '—'}</td>
+                <td className={cn(TD, 'text-right text-stone-700')}>{fp(totals.total_nightshift)}</td>
+                <td className={cn(TD, 'text-right text-stone-700')}>{fp(totals.total_holiday)}</td>
                 <td className={cn(TD, 'text-right text-stone-900 font-bold')}>{fp(totals.total_gross)}</td>
                 <td className={cn(TD, 'text-right text-red-700 font-bold')}>{fp(totals.sss)}</td>
                 <td className={cn(TD, 'text-right text-red-700 font-bold')}>{fp(totals.philhealth)}</td>
@@ -388,8 +388,17 @@ export function WeeklySummaryPage({ employees }: Props) {
   const [dailyRecords, setDailyRecords] = useState<DailyRecord[]>([])
   const [weeklyRecords, setWeeklyRecords] = useState<WeeklyRecord[]>([])
   const [loading, setLoading] = useState(false)
+  const [exportingPayslips, setExportingPayslips] = useState(false)
+  const [nightshiftRate, setNightshiftRate] = useState(0.25)
 
   const { selectedCompany } = useCompany()
+
+  useEffect(() => {
+    supabase.from('config').select('key, value').then(({ data }) => {
+      const row = (data as { key: string; value: string }[] | null)?.find((r) => r.key === 'NIGHTSHIFT_BONUS_RATE')
+      if (row) setNightshiftRate(parseFloat(row.value))
+    })
+  }, [])
 
   const weekDates = useMemo(() => getWeekDates(selectedWeek), [selectedWeek])
   const weekEnd = useMemo(() => getWeekEnd(selectedWeek), [selectedWeek])
@@ -414,7 +423,7 @@ export function WeeklySummaryPage({ employees }: Props) {
       catch (err) { console.error('[weekly-summary] recomputeSSSForWeek failed', err) }
     }
     const [{ data: dr }, { data: wr }] = await Promise.all([
-      supabase.from('daily_records').select('employee_id, date, daily_pay, holiday')
+      supabase.from('daily_records').select('employee_id, date, daily_pay, holiday, nightshift')
         .in('employee_id', empIds).gte('date', week).lte('date', end),
       supabase.from('weekly_records').select('*')
         .in('employee_id', empIds).eq('week_start', week),
@@ -492,19 +501,23 @@ export function WeeklySummaryPage({ employees }: Props) {
 
   const [showSummaryModal, setShowSummaryModal] = useState(false)
 
-  const holidayCountMap = useMemo((): Map<number, { has100: boolean; has30: boolean }> => {
-    const map = new Map<number, { has100: boolean; has30: boolean }>()
-    for (const r of dailyRecords) {
-      if (r.daily_pay > 0 && r.holiday) {
-        const prev = map.get(r.employee_id) ?? { has100: false, has30: false }
-        map.set(r.employee_id, {
-          has100: prev.has100 || r.holiday === '100%',
-          has30: prev.has30 || r.holiday === '30%',
-        })
-      }
+  const payBreakdownMap = useMemo((): Map<number, { nightshiftPay: number; holidayPay: number }> => {
+    const empMap = new Map(companyEmployees.map((e) => [e.employee_id, e]))
+    const map = new Map<number, { nightshiftPay: number; holidayPay: number }>()
+    for (const dr of dailyRecords) {
+      if (dr.daily_pay <= 0) continue
+      const emp = empMap.get(dr.employee_id)
+      if (!emp) continue
+      const prev = map.get(dr.employee_id) ?? { nightshiftPay: 0, holidayPay: 0 }
+      map.set(dr.employee_id, {
+        nightshiftPay: prev.nightshiftPay + (dr.nightshift ? emp.daily_salary * nightshiftRate : 0),
+        holidayPay: prev.holidayPay +
+          (dr.holiday === '30%' ? emp.daily_salary * 0.3 : 0) +
+          (dr.holiday === '100%' ? emp.daily_salary : 0),
+      })
     }
     return map
-  }, [dailyRecords])
+  }, [dailyRecords, companyEmployees, nightshiftRate])
 
   const jobSummaryRows = useMemo((): JobSummaryRow[] => {
     // Piecewise workers group by candy type (KING, JR, SP…); others by exact job name
@@ -523,9 +536,9 @@ export function WeeklySummaryPage({ employees }: Props) {
         const sr = allSummaryMap.get(e.employee_id)
         if (!sr || (sr.weeklyTotal === 0 && sr.totalDeductions === 0)) continue
         employee_count++
-        if (e.nightshift) total_nightshift++
-        const hol = holidayCountMap.get(e.employee_id)
-        if (hol?.has100 || hol?.has30) total_holiday++
+        const breakdown = payBreakdownMap.get(e.employee_id)
+        total_nightshift += breakdown?.nightshiftPay ?? 0
+        total_holiday += breakdown?.holidayPay ?? 0
         total_gross += sr.weeklyTotal
         sss += sr.sss; philhealth += sr.philhealth; pagibig += sr.pagibig
         sss_loan += sr.sss_loan; pagibig_loan += sr.pagibig_loan
@@ -541,7 +554,7 @@ export function WeeklySummaryPage({ employees }: Props) {
       if (aOrder !== bOrder) return aOrder - bOrder
       return a.job.localeCompare(b.job, undefined, { numeric: true })
     })
-  }, [companyEmployees, allSummaryMap, holidayCountMap])
+  }, [companyEmployees, allSummaryMap, payBreakdownMap])
 
   // ── Grid data ────────────────────────────────────────────────────────────────
 
@@ -720,6 +733,205 @@ export function WeeklySummaryPage({ employees }: Props) {
     doc.save(`weekly-summary-${selectedCompany}-${selectedWeek}.pdf`)
   }, [selectedWeek, selectedCompany, weekDates, allSummaryMap, companyEmployees])
 
+  // ── Payslip PDF export ───────────────────────────────────────────────────────
+
+  const handleExportPayslips = useCallback(async () => {
+    setExportingPayslips(true)
+    try {
+      const jsPDF = (await import('jspdf')).default
+
+      // Fetch nightshift bonus rate from config
+      const { data: configRows } = await supabase.from('config').select('key, value')
+      const nightshiftRate = configRows
+        ? parseFloat((configRows as { key: string; value: string }[]).find((r) => r.key === 'NIGHTSHIFT_BONUS_RATE')?.value ?? '0.25')
+        : 0.25
+
+      // Build ordered list: office → production → piecewise, each sorted by job then last name
+      const orderedEmployees: Employee[] = []
+      for (const cat of ['office', 'production', 'piecewise'] as Category[]) {
+        orderedEmployees.push(
+          ...sortEmployees(companyEmployees.filter((e) => classifyJob(e.job) === cat), cat),
+        )
+      }
+
+      type SlipData = {
+        name: string
+        nightshiftPay: number
+        holidayPay: number
+        extraPay: number
+        grossPay: number
+        sss: number
+        philhealth: number
+        pagibig: number
+        sssLoan: number
+        pagibigLoan: number
+        others: number  // cash_advance + others combined
+        canteen: number
+        totalDeductions: number
+        netPay: number
+      }
+
+      const slips: SlipData[] = []
+
+      for (const emp of orderedEmployees) {
+        const sr = allSummaryMap.get(emp.employee_id)
+        if (!sr || (sr.weeklyTotal === 0 && sr.totalDeductions === 0)) continue
+
+        const empDrs = dailyRecords.filter((r) => r.employee_id === emp.employee_id && r.daily_pay > 0)
+        let nightshiftDays = 0
+        let holiday30Pay = 0
+        let holiday100Pay = 0
+
+        for (const dr of empDrs) {
+          if (dr.nightshift) nightshiftDays++
+          if (dr.holiday === '30%') holiday30Pay += emp.daily_salary * 0.3
+          if (dr.holiday === '100%') holiday100Pay += emp.daily_salary
+        }
+
+        const nightshiftPay = nightshiftDays * (emp.daily_salary * nightshiftRate)
+        const holidayPay = holiday30Pay + holiday100Pay
+        const basePay = empDrs.length * emp.daily_salary
+        const extraPay = Math.max(0, sr.weeklyTotal - basePay - nightshiftPay - holidayPay)
+
+        slips.push({
+          name: sr.name,
+          nightshiftPay,
+          holidayPay,
+          extraPay,
+          grossPay: sr.weeklyTotal,
+          sss: sr.sss,
+          philhealth: sr.philhealth,
+          pagibig: sr.pagibig,
+          sssLoan: sr.sss_loan,
+          pagibigLoan: sr.pagibig_loan,
+          others: sr.cash_advance + sr.others,
+          canteen: sr.canteen,
+          totalDeductions: sr.totalDeductions,
+          netPay: sr.netPay,
+        })
+      }
+
+      if (slips.length === 0) return
+
+      // A4 landscape: 297 × 210 mm — 4 columns × 2 rows = 8 payslips per page
+      const doc = new jsPDF('l', 'mm', 'a4')
+      const PW = 297, PH = 210, M = 8
+      const COLS = 4, ROWS = 2, PER_PAGE = COLS * ROWS
+      const CW = (PW - 2 * M) / COLS
+      const CH = (PH - 2 * M) / ROWS
+
+      const fmt = (n: number) => n.toFixed(2).replace(/\B(?=(\d{3})+(?!\d))/g, ',')
+
+      function drawSlip(s: SlipData, ox: number, oy: number) {
+        const LH = 3.8
+        const LP = 3.5
+        let cy = oy + 5
+
+        // Border
+        doc.setDrawColor(180)
+        doc.setLineWidth(0.25)
+        doc.rect(ox, oy, CW, CH)
+        doc.setDrawColor(0)
+
+        // ── Title
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(7.5)
+        doc.text('PAYSLIP', ox + CW / 2, cy, { align: 'center' })
+        cy += LH + 0.5
+
+        doc.setFontSize(6.5)
+        doc.text(selectedCompany, ox + CW / 2, cy, { align: 'center' })
+        cy += LH + 1.5
+
+        // ── Name / Period
+        doc.setFont('helvetica', 'normal')
+        doc.setFontSize(6)
+        doc.text('Name:', ox + LP, cy)
+        doc.setFont('helvetica', 'bold')
+        doc.text(s.name, ox + CW - LP, cy, { align: 'right', maxWidth: CW - LP * 2 - 8 })
+        doc.setFont('helvetica', 'normal')
+        cy += LH
+
+        doc.text('Period:', ox + LP, cy)
+        doc.text(selectedWeek, ox + CW - LP, cy, { align: 'right' })
+        cy += LH
+        doc.text('TO ' + weekEnd, ox + CW - LP, cy, { align: 'right' })
+        cy += LH + 1
+
+        // ── SALARY section
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(6)
+        doc.text('SALARY', ox + LP, cy)
+        doc.setLineWidth(0.15)
+        doc.line(ox + 2, cy + 0.8, ox + CW - 2, cy + 0.8)
+        doc.setLineWidth(0.1)
+        cy += LH
+
+        const dataRow = (label: string, val: number) => {
+          doc.setFont('helvetica', 'normal')
+          doc.setFontSize(6)
+          doc.text(label, ox + LP, cy)
+          doc.text(fmt(val), ox + CW - LP, cy, { align: 'right' })
+          cy += LH
+        }
+
+        dataRow('PM Shift:', s.nightshiftPay)
+        dataRow('Holiday Pay:', s.holidayPay)
+        dataRow('Extra:', s.extraPay)
+
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(6.5)
+        doc.text('Gross Pay:', ox + LP, cy)
+        doc.text('P' + fmt(s.grossPay), ox + CW - LP, cy, { align: 'right' })
+        cy += LH + 1
+
+        // ── DEDUCTIONS section
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(6)
+        doc.text('DEDUCTIONS', ox + LP, cy)
+        doc.setLineWidth(0.15)
+        doc.line(ox + 2, cy + 0.8, ox + CW - 2, cy + 0.8)
+        doc.setLineWidth(0.1)
+        cy += LH
+
+        dataRow('SSS Cont.:', s.sss)
+        dataRow('Philhealth:', s.philhealth)
+        dataRow('Pagibig:', s.pagibig)
+        dataRow('SSS Ln.:', s.sssLoan)
+        dataRow('Pagibig Ln.:', s.pagibigLoan)
+        dataRow('Others:', s.others)
+        dataRow('Canteen:', s.canteen)
+
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(6.5)
+        doc.text('Total Ded.:', ox + LP, cy)
+        doc.text('P' + fmt(s.totalDeductions), ox + CW - LP, cy, { align: 'right' })
+        cy += LH + 2
+
+        // ── Net Pay box
+        doc.setFillColor(245, 245, 245)
+        doc.setLineWidth(0.25)
+        doc.rect(ox + 2, cy - 1, CW - 4, 7, 'FD')
+        doc.setFont('helvetica', 'bold')
+        doc.setFontSize(7)
+        doc.text('Net Pay: P' + fmt(s.netPay), ox + CW / 2, cy + 3.5, { align: 'center' })
+      }
+
+      for (let i = 0; i < slips.length; i++) {
+        if (i > 0 && i % PER_PAGE === 0) doc.addPage()
+        const pos = i % PER_PAGE
+        const col = pos % COLS
+        const row = Math.floor(pos / COLS)
+        drawSlip(slips[i], M + col * CW, M + row * CH)
+      }
+
+      const slug = selectedCompany.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase()
+      doc.save(`payslips_${slug}_${selectedWeek}.pdf`)
+    } finally {
+      setExportingPayslips(false)
+    }
+  }, [dailyRecords, companyEmployees, allSummaryMap, selectedWeek, weekEnd, selectedCompany])
+
   // ── Render ───────────────────────────────────────────────────────────────────
 
   return (
@@ -749,6 +961,16 @@ export function WeeklySummaryPage({ employees }: Props) {
                 <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3" />
               </svg>
               Export PDF
+            </button>
+            <button
+              onClick={handleExportPayslips}
+              disabled={exportingPayslips}
+              className="flex items-center gap-1.5 px-3 py-1.5 rounded-lg border border-stone-200 bg-white text-sm font-sans text-stone-700 hover:border-stone-300 hover:bg-stone-50 disabled:opacity-50 transition-colors"
+            >
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                <path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z" /><polyline points="14 2 14 8 20 8" /><line x1="16" y1="13" x2="8" y2="13" /><line x1="16" y1="17" x2="8" y2="17" /><polyline points="10 9 9 9 8 9" />
+              </svg>
+              {exportingPayslips ? 'Exporting…' : 'Export Payslips'}
             </button>
           </div>
         </div>
