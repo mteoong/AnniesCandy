@@ -1905,82 +1905,130 @@ function TruckCapacityBar({
 
     if (activeProducts.length === 0) return null
 
-    const totals: Record<string, number> = {}
-    for (const s of sortedStops) {
-      const empakoMap: Record<string, boolean> = {}
-      if (!s.isWarehouseDrop && s.orderId && orderItemsByOrder) {
-        for (const oi of orderItemsByOrder[s.orderId] ?? [])
-          empakoMap[oi.product_id] = oi.empako ?? false
-      }
-      for (const i of s.items) {
-        const isEmpako = !SPREAD_PRODUCT_IDS.has(i.productId) && (empakoMap[i.productId] ?? false)
-        totals[i.productId] = (totals[i.productId] ?? 0) + (isEmpako ? i.cases * 2 : i.cases)
-      }
+    type StopData = {
+      stop: TruckStop
+      idx: number
+      label: string
+      isWh: boolean
+      empakoMap: Record<string, boolean>
+      itemMap: Record<string, number>
     }
+
+    const allRows: StopData[] = sortedStops.map((stop, idx) => {
+      const itemMap: Record<string, number> = {}
+      for (const i of stop.items) itemMap[i.productId] = i.cases
+
+      const empakoMap: Record<string, boolean> = {}
+      if (!stop.isWarehouseDrop && stop.orderId && orderItemsByOrder) {
+        for (const oi of orderItemsByOrder[stop.orderId] ?? [])
+          empakoMap[oi.product_id] = !SPREAD_PRODUCT_IDS.has(oi.product_id) && (oi.empako ?? false)
+      }
+
+      const isWh = !!stop.isWarehouseDrop
+      let label: string
+      if (isWh) {
+        label = 'Warehouse'
+      } else {
+        const order = orderById.get(stop.orderId!)
+        const customer = customerById.get(order?.customer_id ?? -1)
+        label = customer?.name ?? `Order #${stop.orderId}`
+      }
+      return { stop, idx, label, isWh, empakoMap, itemMap }
+    })
+
+    const topRows = allRows.filter(r =>
+      r.isWh || Object.entries(r.itemMap).some(([pid, cs]) => !r.empakoMap[pid] && cs > 0)
+    )
+    const bottomRows = allRows.filter(r =>
+      !r.isWh && Object.entries(r.itemMap).some(([pid, cs]) => r.empakoMap[pid] && cs > 0)
+    )
+    const hasEmpako = bottomRows.length > 0
+
+    const topTotals: Record<string, number> = {}
+    for (const r of topRows)
+      for (const [pid, cs] of Object.entries(r.itemMap))
+        if (r.isWh || !r.empakoMap[pid]) topTotals[pid] = (topTotals[pid] ?? 0) + cs
+
+    const bottomTotals: Record<string, number> = {}
+    for (const r of bottomRows)
+      for (const [pid, cs] of Object.entries(r.itemMap))
+        if (r.empakoMap[pid]) bottomTotals[pid] = (bottomTotals[pid] ?? 0) + cs
 
     return (
       <div className="mt-2 border border-stone-100 rounded-lg overflow-x-auto">
         <table className="w-full text-xs font-sans">
           <thead>
             <tr className="bg-stone-50 border-b border-stone-100">
-              <th className="text-left px-3 py-1.5 font-medium text-stone-400 whitespace-nowrap w-40">Stop</th>
+              <th className="text-left px-3 py-1.5 font-medium text-stone-400 whitespace-nowrap w-40">Client</th>
               {activeProducts.map(p => (
                 <th key={p.id} className="px-2 py-1.5 font-medium text-stone-400 text-right whitespace-nowrap">{getProductAbbr(p)}</th>
               ))}
             </tr>
           </thead>
           <tbody className="divide-y divide-stone-50">
-            {sortedStops.map((stop, idx) => {
-              const itemMap: Record<string, number> = {}
-              for (const i of stop.items) itemMap[i.productId] = i.cases
-
-              const empakoMap: Record<string, boolean> = {}
-              if (!stop.isWarehouseDrop && stop.orderId && orderItemsByOrder) {
-                for (const oi of orderItemsByOrder[stop.orderId] ?? []) {
-                  empakoMap[oi.product_id] = oi.empako ?? false
-                }
-              }
-
-              let label: string
-              let rowCls = 'hover:bg-stone-50'
-              if (stop.isWarehouseDrop) {
-                label = 'Warehouse'
-                rowCls = 'bg-amber-50'
-              } else {
-                const order    = orderById.get(stop.orderId!)
-                const customer = customerById.get(order?.customer_id ?? -1)
-                label = customer?.name ?? `Order #${stop.orderId}`
-              }
-
-              return (
-                <tr key={stop.deliveryId} className={rowCls}>
-                  <td className={cn('px-3 py-1.5 whitespace-nowrap w-40', stop.isWarehouseDrop ? 'text-amber-700 font-medium' : 'text-stone-600')}>
-                    <span className="text-stone-300 mr-1">{idx + 1}.</span>{label}
-                  </td>
-                  {activeProducts.map(p => (
-                    <td key={p.id} className={cn('px-2 py-1.5 text-right font-mono tabular-nums', stop.isWarehouseDrop ? 'text-amber-700' : 'text-stone-700')}>
-                      {itemMap[p.id] != null ? (
-                        <>
-                          {itemMap[p.id]}
-                          {empakoMap[p.id] && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
-                        </>
-                      ) : <span className="text-stone-200">—</span>}
+            {hasEmpako && (
+              <tr className="bg-stone-50">
+                <td colSpan={1 + activeProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                  20×1
+                </td>
+              </tr>
+            )}
+            {topRows.map(r => (
+              <tr key={r.stop.deliveryId} className="hover:bg-stone-50">
+                <td className="px-3 py-1.5 text-stone-600 whitespace-nowrap w-40">
+                  <span className="text-stone-300 mr-1">{r.idx + 1}.</span>{r.label}
+                </td>
+                {activeProducts.map(p => {
+                  const val = r.isWh ? r.itemMap[p.id] : (!r.empakoMap[p.id] ? r.itemMap[p.id] : undefined)
+                  return (
+                    <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums text-stone-700">
+                      {val != null ? val : <span className="text-stone-200">—</span>}
                     </td>
-                  ))}
-                </tr>
-              )
-            })}
-          </tbody>
-          <tfoot>
+                  )
+                })}
+              </tr>
+            ))}
             <tr className="bg-stone-100 border-t border-stone-200">
               <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total</td>
               {activeProducts.map(p => (
                 <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums font-semibold text-stone-700">
-                  {totals[p.id] ?? 0}
+                  {topTotals[p.id] ?? 0}
                 </td>
               ))}
             </tr>
-          </tfoot>
+            {hasEmpako && (
+              <>
+                <tr className="bg-stone-50 border-t-2 border-stone-200">
+                  <td colSpan={1 + activeProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                    40×1
+                  </td>
+                </tr>
+                {bottomRows.map(r => (
+                  <tr key={`emp-${r.stop.deliveryId}`} className="hover:bg-stone-50">
+                    <td className="px-3 py-1.5 text-stone-600 whitespace-nowrap w-40">
+                      <span className="text-stone-300 mr-1">{r.idx + 1}.</span>{r.label}
+                    </td>
+                    {activeProducts.map(p => {
+                      const val = r.empakoMap[p.id] ? r.itemMap[p.id] : undefined
+                      return (
+                        <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums text-stone-700">
+                          {val != null ? val : <span className="text-stone-200">—</span>}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+                <tr className="bg-stone-100 border-t border-stone-200">
+                  <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total</td>
+                  {activeProducts.map(p => (
+                    <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums font-semibold text-stone-700">
+                      {bottomTotals[p.id] ?? 0}
+                    </td>
+                  ))}
+                </tr>
+              </>
+            )}
+          </tbody>
         </table>
       </div>
     )

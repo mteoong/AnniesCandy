@@ -77,13 +77,9 @@ function TruckSummary({
   const productTotals: Record<string, number> = {}
   for (const stop of unifiedStops) {
     if (stop.kind === 'customer') {
-      for (const item of stop.items) {
-        productTotals[item.product_id] = (productTotals[item.product_id] ?? 0) + item.cases
-      }
+      for (const item of stop.items) productTotals[item.product_id] = (productTotals[item.product_id] ?? 0) + item.cases
     } else {
-      for (const drop of stop.drops) {
-        productTotals[drop.product_id] = (productTotals[drop.product_id] ?? 0) + drop.cases
-      }
+      for (const drop of stop.drops) productTotals[drop.product_id] = (productTotals[drop.product_id] ?? 0) + drop.cases
     }
   }
 
@@ -97,6 +93,47 @@ function TruckSummary({
     }),
     [unifiedStops, orderItemsByOrderId],
   )
+
+  // Build per-stop row data for two-section table
+  type SRowData = {
+    stop: UnifiedStop
+    idx: number
+    label: string
+    empakoMap: Record<string, boolean>
+    itemMap: Record<string, number>
+  }
+
+  const allRows: SRowData[] = unifiedStops.map((stop, idx) => {
+    if (stop.kind === 'warehouse') {
+      const itemMap: Record<string, number> = {}
+      for (const d of stop.drops) itemMap[d.product_id] = (itemMap[d.product_id] ?? 0) + d.cases
+      return { stop, idx, label: 'Warehouse', empakoMap: {}, itemMap }
+    }
+    const itemMap: Record<string, number> = {}
+    for (const item of stop.items) itemMap[item.product_id] = item.cases
+    const empakoMap: Record<string, boolean> = {}
+    const ois = stop.order ? (orderItemsByOrderId[stop.order.id] ?? []) : []
+    for (const oi of ois) empakoMap[oi.product_id] = oi.empako ?? false
+    return { stop, idx, label: stop.customer?.name ?? 'Unknown', empakoMap, itemMap }
+  })
+
+  const topRows = allRows.filter(r =>
+    r.stop.kind === 'warehouse' || Object.entries(r.itemMap).some(([pid, cs]) => !r.empakoMap[pid] && cs > 0)
+  )
+  const bottomRows = allRows.filter(r =>
+    r.stop.kind === 'customer' && Object.entries(r.itemMap).some(([pid, cs]) => r.empakoMap[pid] && cs > 0)
+  )
+  const hasEmpako = bottomRows.length > 0
+
+  const topTotals: Record<string, number> = {}
+  for (const r of topRows)
+    for (const [pid, cs] of Object.entries(r.itemMap))
+      if (r.stop.kind === 'warehouse' || !r.empakoMap[pid]) topTotals[pid] = (topTotals[pid] ?? 0) + cs
+
+  const bottomTotals: Record<string, number> = {}
+  for (const r of bottomRows)
+    for (const [pid, cs] of Object.entries(r.itemMap))
+      if (r.empakoMap[pid]) bottomTotals[pid] = (bottomTotals[pid] ?? 0) + cs
 
   return (
     <div className="bg-white rounded-xl border border-stone-200 overflow-hidden">
@@ -119,7 +156,6 @@ function TruckSummary({
           <p className="px-4 py-3 text-sm text-stone-400">No items recorded.</p>
         ) : (
           <>
-            {/* Main delivery table */}
             <div className="overflow-x-auto">
               <table className="w-full text-sm summary-truck-table">
                 <thead>
@@ -133,76 +169,92 @@ function TruckSummary({
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-stone-100">
-                  {unifiedStops.map((stop, idx) => {
-                    if (stop.kind === 'warehouse') {
-                      const dropMap: Record<string, number> = {}
-                      for (const d of stop.drops) {
-                        dropMap[d.product_id] = (dropMap[d.product_id] ?? 0) + d.cases
-                      }
+                  {hasEmpako && (
+                    <tr className="bg-stone-50">
+                      <td colSpan={1 + activeProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                        20×1
+                      </td>
+                    </tr>
+                  )}
+                  {topRows.map(r => {
+                    if (r.stop.kind === 'warehouse') {
                       return (
-                        <tr key="warehouse" className="bg-amber-50">
-                          <td className="px-4 py-2 text-amber-700 font-medium whitespace-nowrap">
-                            <span className="text-stone-400 text-xs mr-1.5">{idx + 1}.</span>
-                            Warehouse
+                        <tr key="warehouse" className="hover:bg-stone-50">
+                          <td className="px-4 py-2 text-stone-700 font-medium whitespace-nowrap">
+                            <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>Warehouse
                           </td>
                           {activeProducts.map(p => (
-                            <td key={p.id} className="px-3 py-2 text-right text-amber-700">
-                              {dropMap[p.id] != null ? dropMap[p.id] : <span className="text-amber-200">—</span>}
+                            <td key={p.id} className="px-3 py-2 text-right text-stone-700">
+                              {r.itemMap[p.id] != null ? r.itemMap[p.id] : <span className="text-stone-200">—</span>}
                             </td>
                           ))}
                         </tr>
                       )
                     }
-
-                    const itemMap: Record<string, number> = {}
-                    for (const item of stop.items) itemMap[item.product_id] = item.cases
-
-                    const orderItemsForStop = stop.order
-                      ? (orderItemsByOrderId[stop.order.id] ?? [])
-                      : []
-
+                    const cs = r.stop as CustomerStop
                     return (
-                      <tr key={stop.delivery.id} className="hover:bg-stone-50">
+                      <tr key={cs.delivery.id} className="hover:bg-stone-50">
                         <td className="px-4 py-2 text-stone-700 whitespace-nowrap">
-                          <span className="text-stone-400 text-xs mr-1.5">{idx + 1}.</span>
-                          {stop.customer?.name ?? 'Unknown'}
+                          <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>{r.label}
                         </td>
                         {activeProducts.map(p => {
-                          const count = itemMap[p.id]
-                          const isEmpako = orderItemsForStop.find(i => i.product_id === p.id)?.empako ?? false
+                          const val = !r.empakoMap[p.id] ? r.itemMap[p.id] : undefined
                           return (
                             <td key={p.id} className="px-3 py-2 text-right text-stone-700">
-                              {count != null ? (
-                                <>
-                                  {count}
-                                  {isEmpako && count > 0 && (
-                                    <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>
-                                  )}
-                                </>
-                              ) : (
-                                <span className="text-stone-200">—</span>
-                              )}
+                              {val != null ? val : <span className="text-stone-200">—</span>}
                             </td>
                           )
                         })}
                       </tr>
                     )
                   })}
-                </tbody>
-                <tfoot>
                   <tr className="bg-stone-100 border-t-2 border-stone-200">
                     <td className="px-4 py-2 font-semibold text-stone-700">Total</td>
                     {activeProducts.map(p => (
                       <td key={p.id} className="px-3 py-2 text-right font-semibold text-stone-800">
-                        {productTotals[p.id] ?? 0}
+                        {topTotals[p.id] ?? 0}
                       </td>
                     ))}
                   </tr>
-                </tfoot>
+                  {hasEmpako && (
+                    <>
+                      <tr className="bg-stone-50 border-t-2 border-stone-200">
+                        <td colSpan={1 + activeProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                          40×1
+                        </td>
+                      </tr>
+                      {bottomRows.map(r => {
+                        const cs = r.stop as CustomerStop
+                        return (
+                          <tr key={`emp-${cs.delivery.id}`} className="hover:bg-stone-50">
+                            <td className="px-4 py-2 text-stone-700 whitespace-nowrap">
+                              <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>{r.label}
+                            </td>
+                            {activeProducts.map(p => {
+                              const val = r.empakoMap[p.id] ? r.itemMap[p.id] : undefined
+                              return (
+                                <td key={p.id} className="px-3 py-2 text-right text-stone-700">
+                                  {val != null ? val : <span className="text-stone-200">—</span>}
+                                </td>
+                              )
+                            })}
+                          </tr>
+                        )
+                      })}
+                      <tr className="bg-stone-100 border-t-2 border-stone-200">
+                        <td className="px-4 py-2 font-semibold text-stone-700">Total</td>
+                        {activeProducts.map(p => (
+                          <td key={p.id} className="px-3 py-2 text-right font-semibold text-stone-800">
+                            {bottomTotals[p.id] ?? 0}
+                          </td>
+                        ))}
+                      </tr>
+                    </>
+                  )}
+                </tbody>
               </table>
             </div>
 
-            {/* 40x1 labels sub-table */}
             {empakaStops.length > 0 && (
               <div className="border-t border-amber-100 bg-amber-50/40 px-4 py-3">
                 <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 font-sans mb-2">
@@ -349,54 +401,80 @@ export function SummaryPage({
         const pidSet = new Set(stops.flatMap(s => s.items.map(i => i.product_id)))
         const activeProds = products.filter(p => pidSet.has(p.id))
 
-        const totals: Record<string, number> = {}
-        for (const stop of stops)
-          for (const item of stop.items)
-            totals[item.product_id] = (totals[item.product_id] ?? 0) + item.cases
-
         const head = [['Client', ...activeProds.map(p => getProductAbbr(p))]]
 
-        const stopsRows: string[][] = stops.map((stop, idx) => [
-          `${idx + 1}. ${stop.label}`,
+        // Split stops into top (non-empako + warehouse) and bottom (empako) sections
+        const topStops = stops.filter(s => {
+          if (s.isWh) return true
+          return activeProds.some(p => {
+            const isEmpako = s.orderId != null && (orderItemsByOrderId[s.orderId]?.find((oi: any) => oi.product_id === p.id)?.empako ?? false)
+            const item = s.items.find((i: any) => i.product_id === p.id)
+            return !isEmpako && item && item.cases > 0
+          })
+        })
+        const botStops = stops.filter(s => {
+          if (s.isWh) return false
+          return activeProds.some(p => {
+            const isEmpako = s.orderId != null && (orderItemsByOrderId[s.orderId]?.find((oi: any) => oi.product_id === p.id)?.empako ?? false)
+            const item = s.items.find((i: any) => i.product_id === p.id)
+            return isEmpako && item && item.cases > 0
+          })
+        })
+        const pdfHasEmpako = botStops.length > 0
+
+        const topTotals: Record<string, number> = {}
+        for (const s of topStops)
+          for (const item of s.items) {
+            const isEmpako = !s.isWh && s.orderId != null && (orderItemsByOrderId[s.orderId]?.find((oi: any) => oi.product_id === item.product_id)?.empako ?? false)
+            if (!isEmpako) topTotals[item.product_id] = (topTotals[item.product_id] ?? 0) + item.cases
+          }
+        const botTotals: Record<string, number> = {}
+        for (const s of botStops)
+          for (const item of s.items) {
+            const isEmpako = s.orderId != null && (orderItemsByOrderId[s.orderId]?.find((oi: any) => oi.product_id === item.product_id)?.empako ?? false)
+            if (isEmpako) botTotals[item.product_id] = (botTotals[item.product_id] ?? 0) + item.cases
+          }
+
+        const makeRow = (s: typeof stops[0], section: 'top' | 'bot'): string[] => [
+          `${s.stopOrder}. ${s.label}`,
           ...activeProds.map(p => {
-            const item = stop.items.find(i => i.product_id === p.id)
+            const item = s.items.find((i: any) => i.product_id === p.id)
             if (!item) return '—'
-            const isEmpako = !stop.isWh && stop.orderId != null
-              ? (orderItemsByOrderId[stop.orderId]?.find(oi => oi.product_id === p.id)?.empako ?? false)
-              : false
-            return isEmpako ? `${item.cases}\n40x1` : String(item.cases)
+            if (s.isWh) return String(item.cases)
+            const isEmpako = s.orderId != null && (orderItemsByOrderId[s.orderId]?.find((oi: any) => oi.product_id === p.id)?.empako ?? false)
+            if (section === 'top') return isEmpako ? '—' : String(item.cases)
+            return isEmpako ? String(item.cases) : '—'
           }),
-        ])
+        ]
+
+        const topRows = topStops.map(s => makeRow(s, 'top'))
+        const topTotalRow = [pdfHasEmpako ? 'Subtotal' : 'Total', ...activeProds.map(p => String(topTotals[p.id] ?? 0))]
+        const separatorRow = ['40x1', ...Array(activeProds.length).fill('')]
+        const botRows = botStops.map(s => makeRow(s, 'bot'))
+        const botTotalRow = ['Total', ...activeProds.map(p => String(botTotals[p.id] ?? 0))]
+
+        const topSubtotalIdx = topRows.length
+        let separatorIdx: number | null = null
+        let botTotalIdx: number | null = null
+
+        let body: string[][]
+        if (pdfHasEmpako) {
+          separatorIdx = topRows.length + 1
+          botTotalIdx = topRows.length + 1 + botRows.length + 1
+          body = [...topRows, topTotalRow, separatorRow, ...botRows, botTotalRow]
+        } else {
+          body = [...topRows, topTotalRow]
+        }
 
         const empakaLabels = stops
           .filter(s => !s.isWh && s.orderId != null &&
-            (orderItemsByOrderId[s.orderId]?.some(oi => oi.empako) ?? false))
+            (orderItemsByOrderId[s.orderId]?.some((oi: any) => oi.empako) ?? false))
           .map(s => ({
             clientName: s.label,
             note: orderById.get(s.orderId!)?.empaka_note || s.label,
           }))
 
-        // Always reserve space for heading + at least 2 label lines at the bottom
-        const empakaH = empLineH * (1 + Math.max(2, empakaLabels.length)) + 2
-        const tableAvailH = qh - titleH - empakaH
-
-        // Rows containing "\n" (e.g. "100\n40x1") render taller than rowH because
-        // they have two lines of text. Account for that extra height before computing
-        // how many filler rows can fit.
-        const doubleLineH   = 7  // empirical 2-line cell height in mm at 6.5pt font
-        const numDoubleRows = stopsRows.filter(row => row.some(cell => cell.includes('\n'))).length
-        const naturalH      = rowH * (2 + stopsRows.length - numDoubleRows)
-                            + doubleLineH * numDoubleRows
-        const numFillers    = Math.max(0, Math.floor((tableAvailH - naturalH) / rowH))
-        const emptyRow      = new Array(1 + activeProds.length).fill('')
-
-        const body: string[][] = [
-          ...stopsRows,
-          ...Array(numFillers).fill(null).map(() => [...emptyRow]),
-          ['Total', ...activeProds.map(p => String(totals[p.id] ?? 0))],
-        ]
-
-        return { truck, head, body, totalRow: body.length - 1, empakaLabels }
+        return { truck, head, body, topSubtotalIdx, separatorIdx, botTotalIdx, empakaLabels }
       })
 
       function drawCutLines() {
@@ -456,9 +534,17 @@ export function SummaryPage({
           // Client column narrower so product columns have room for numbers
           columnStyles: { 0: { cellWidth: 28, halign: 'left' as const } },
           didParseCell: (data: any) => {
-            if (data.section === 'body' && data.row.index === t.totalRow) {
+            if (data.section !== 'body') return
+            const row = data.row.index
+            const t = tables[i]
+            if (row === t.topSubtotalIdx || row === t.botTotalIdx) {
               data.cell.styles.fontStyle = 'bold'
               data.cell.styles.fillColor = [240, 240, 240]
+            }
+            if (t.separatorIdx != null && row === t.separatorIdx) {
+              data.cell.styles.fontStyle = 'bold'
+              data.cell.styles.textColor = [80, 80, 80]
+              data.cell.styles.halign = 'center'
             }
           },
         })
