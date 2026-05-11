@@ -223,6 +223,9 @@ export function DashboardPage({
     return init
   })
   const empakaTimers = useRef<Map<number, ReturnType<typeof setTimeout>>>(new Map())
+  const [cancelledOrderIds, setCancelledOrderIds] = useState<Set<number>>(new Set())
+  const [localNewOrders, setLocalNewOrders] = useState<Order[]>([])
+  const [newOrderOpen, setNewOrderOpen] = useState(false)
 
   const [localWarehouse, setLocalWarehouse] = useState(warehouse)
   const localWarehouseRef = useRef(warehouse)
@@ -250,7 +253,6 @@ export function DashboardPage({
 
   const customerById = useMemo(() => new Map(customers.map(c => [c.id, c])), [customers])
   const productById  = useMemo(() => new Map(products.map(p => [p.id, p])), [products])
-  const orderById    = useMemo(() => new Map(orders.map(o => [o.id, o])), [orders])
   const truckById    = useMemo(() => new Map(trucks.map(t => [t.id, t])), [trucks])
 
   const orderItemsByOrder = useMemo(() => {
@@ -264,14 +266,27 @@ export function DashboardPage({
 
   // ── Remaining (partial delivery) ─────────────────────────────────────────
 
+  const visibleOrders = useMemo(() => {
+    const base = cancelledOrderIds.size === 0 ? orders : orders.filter(o => !cancelledOrderIds.has(o.id))
+    return localNewOrders.length === 0 ? base : [...base, ...localNewOrders]
+  }, [orders, cancelledOrderIds, localNewOrders])
+
+  const orderById = useMemo(() => new Map(visibleOrders.map(o => [o.id, o])), [visibleOrders])
+
+  const sevenDaysAgo = useMemo(() => {
+    const d = new Date(date + 'T00:00:00')
+    d.setDate(d.getDate() - 7)
+    return d.toLocaleDateString('en-CA')
+  }, [date])
+
   const orderRemainingMap = useMemo(() => {
     const map = new Map<number, OrderRemaining>()
-    for (const order of orders) {
+    for (const order of visibleOrders) {
       const items = orderItemsByOrder[order.id] ?? []
       map.set(order.id, getOrderRemaining(order.id, items, localAllDeliveries, localAllDeliveryItems))
     }
     return map
-  }, [orders, orderItemsByOrder, localAllDeliveries, localAllDeliveryItems])
+  }, [visibleOrders, orderItemsByOrder, localAllDeliveries, localAllDeliveryItems])
 
   // ── Inventory / capacity ──────────────────────────────────────────────────
 
@@ -344,23 +359,23 @@ export function DashboardPage({
   }, [localWarehouseDrops])
 
   const fulfilledOrders = useMemo(
-    () => orders.filter(o => {
+    () => visibleOrders.filter(o => {
       const rem = orderRemainingMap.get(o.id)
-      return rem && rem.totalOrdered > 0 && rem.totalRemaining === 0
+      return rem && rem.totalOrdered > 0 && rem.totalRemaining === 0 && o.delivery_date_end >= sevenDaysAgo
     }),
-    [orders, orderRemainingMap],
+    [visibleOrders, orderRemainingMap, sevenDaysAgo],
   )
 
   // ── Unassigned orders ─────────────────────────────────────────────────────
 
   const unassigned = useMemo(
-    () => orders.filter(o => {
+    () => visibleOrders.filter(o => {
       const rem = orderRemainingMap.get(o.id)
       // Orders with no items (totalOrdered=0) are data-entry incomplete — surface them here
       if (!rem || rem.totalOrdered === 0) return true
       return rem.totalRemaining > 0
     }),
-    [orders, orderRemainingMap],
+    [visibleOrders, orderRemainingMap],
   )
 
   const sortedUnassigned = useMemo(() => {
@@ -485,6 +500,19 @@ export function DashboardPage({
         .then(({ error }) => { if (error) toast('Failed to save empaka note', 'error') })
     }, 800))
   }
+
+  const handleDeleteOrder = useCallback(async (orderId: number) => {
+    const { error } = await supabase.from('orders').update({ status: 'cancelled' }).eq('id', orderId)
+    if (error) { toast('Failed to delete order', 'error'); return }
+    setCancelledOrderIds(prev => new Set([...prev, orderId]))
+    toast('Order deleted', 'success')
+  }, [])
+
+  const handleOrderCreated = useCallback((order: Order, items: OrderItem[]) => {
+    setLocalNewOrders(prev => [...prev, order])
+    syncLocalOrderItems(prev => [...prev, ...items])
+    setEmpakaByOrder(prev => ({ ...prev, [order.id]: '' }))
+  }, [])
 
   function handleWarehouseEdit(productId: string, field: 'pickup' | 'stock', raw: string) {
     const val = parseInt(raw) || 0
@@ -1022,7 +1050,15 @@ export function DashboardPage({
                   {unassigned.length} order{unassigned.length !== 1 ? 's' : ''} to assign
                 </p>
               </div>
-              <DayPicker date={date} />
+              <div className="flex items-center gap-2 flex-shrink-0">
+                <button
+                  onClick={() => setNewOrderOpen(true)}
+                  className="px-3 py-1.5 text-xs font-semibold font-sans rounded-lg bg-stone-800 text-white hover:bg-stone-700 transition-colors"
+                >
+                  + New Order
+                </button>
+                <DayPicker date={date} />
+              </div>
             </div>
 
             {/* Tabs */}
@@ -1079,7 +1115,7 @@ export function DashboardPage({
                             truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
                             date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
                           }))
-                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} />
+                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} onDelete={() => handleDeleteOrder(order.id)} />
                         })}
                       </div>
                     </div>
@@ -1099,7 +1135,7 @@ export function DashboardPage({
                             truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
                             date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
                           }))
-                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} />
+                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} onDelete={() => handleDeleteOrder(order.id)} />
                         })}
                       </div>
                     </div>
@@ -1119,7 +1155,7 @@ export function DashboardPage({
                             truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
                             date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
                           }))
-                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} />
+                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} onDelete={() => handleDeleteOrder(order.id)} />
                         })}
                       </div>
                     </div>
@@ -1139,7 +1175,7 @@ export function DashboardPage({
                             truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
                             date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
                           }))
-                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} />
+                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} onDelete={() => handleDeleteOrder(order.id)} />
                         })}
                       </div>
                     </div>
@@ -1159,7 +1195,7 @@ export function DashboardPage({
                           date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
                         }))
                         const totalCases = (orderItemsByOrder[order.id] ?? []).reduce((s, i) => s + i.cases, 0)
-                        return <FulfilledOrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} totalCases={totalCases} deliveries={orderDeliveries} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} products={products} items={orderItemsByOrder[order.id] ?? []} viewingDate={date} onGoToTruck={setSelectedTruckId} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} />
+                        return <FulfilledOrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} totalCases={totalCases} deliveries={orderDeliveries} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} products={products} items={orderItemsByOrder[order.id] ?? []} viewingDate={date} onGoToTruck={setSelectedTruckId} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onDelete={() => handleDeleteOrder(order.id)} />
                       })}
                     </div>
                   )}
@@ -1335,7 +1371,7 @@ export function DashboardPage({
         onClose={() => setPartialDialog(p => ({ ...p, open: false }))}
         initialOrderId={partialDialog.orderId}
         initialTruckId={partialDialog.truckId}
-        orders={orders}
+        orders={visibleOrders}
         trucks={trucks}
         products={products}
         productById={productById}
@@ -1362,6 +1398,15 @@ export function DashboardPage({
         truckProductTotals={truckProductTotals}
         onSubmit={handleCreateWarehouseDrop}
       />
+
+      <NewOrderDialog
+        open={newOrderOpen}
+        onClose={() => setNewOrderOpen(false)}
+        customers={customers}
+        products={products}
+        date={date}
+        onCreated={handleOrderCreated}
+      />
     </>
   )
 }
@@ -1369,7 +1414,7 @@ export function DashboardPage({
 // ── EditOrderDialog ───────────────────────────────────────────────────────────
 
 function EditOrderDialog({
-  open, onClose, items, products, onSave, onToggleEmpako,
+  open, onClose, items, products, onSave, onToggleEmpako, onDelete,
 }: {
   open: boolean
   onClose: () => void
@@ -1377,10 +1422,13 @@ function EditOrderDialog({
   products: DeliveryProduct[]
   onSave: (productId: string, cases: number) => Promise<void>
   onToggleEmpako: (productId: string, empako: boolean) => Promise<void>
+  onDelete: () => Promise<void>
 }) {
   const [amounts, setAmounts] = useState<Record<string, string>>({})
   const [empakoState, setEmpakoState] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState(false)
+  const [confirmDelete, setConfirmDelete] = useState(false)
+  const [deleting, setDeleting] = useState(false)
 
   useEffect(() => {
     if (open) {
@@ -1392,8 +1440,16 @@ function EditOrderDialog({
       }
       setAmounts(initAmounts)
       setEmpakoState(initEmpako)
+      setConfirmDelete(false)
     }
   }, [open, items])
+
+  async function handleDelete() {
+    setDeleting(true)
+    await onDelete()
+    setDeleting(false)
+    onClose()
+  }
 
   async function handleSave() {
     setSaving(true)
@@ -1468,6 +1524,14 @@ function EditOrderDialog({
           })}
         </div>
         <DialogFooter>
+          <div className="flex-1 flex items-center">
+            <button
+              onClick={() => setConfirmDelete(true)}
+              className="px-3 py-1.5 text-xs font-semibold font-sans rounded-lg border border-red-200 text-red-500 hover:bg-red-50 transition-colors"
+            >
+              Delete Order
+            </button>
+          </div>
           <button
             onClick={onClose}
             className="px-4 py-2 text-sm font-sans font-medium text-stone-500 hover:text-stone-700 transition-colors"
@@ -1482,6 +1546,30 @@ function EditOrderDialog({
           </button>
         </DialogFooter>
       </DialogContent>
+
+      {/* Delete confirmation popup */}
+      <Dialog open={confirmDelete} onOpenChange={v => { if (!v) setConfirmDelete(false) }}>
+        <DialogContent className="max-w-xs">
+          <DialogHeader>
+            <DialogTitle>Delete this order?</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm font-sans text-stone-500 -mt-2 pb-1">This cannot be undone.</p>
+          <DialogFooter>
+            <button
+              onClick={() => setConfirmDelete(false)}
+              className="px-4 py-2 text-sm font-sans font-medium text-stone-500 hover:text-stone-700 transition-colors"
+            >
+              Cancel
+            </button>
+            <button
+              onClick={handleDelete} disabled={deleting}
+              className="px-5 py-2 text-sm font-semibold font-sans rounded-xl bg-red-600 text-white hover:bg-red-700 disabled:opacity-50 transition-colors"
+            >
+              {deleting ? 'Deleting…' : 'Delete'}
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   )
 }
@@ -1491,7 +1579,7 @@ function EditOrderDialog({
 function OrderCard({
   order, customer, items, remaining, productById, products, date,
   deliveries, onUpdateItem, onToggleEmpako, onGoToTruck, onPartialClick, onAddToTruck,
-  empakaNote, onEmpakaChange,
+  empakaNote, onEmpakaChange, onDelete,
 }: {
   order: Order
   customer: Customer | null
@@ -1508,6 +1596,7 @@ function OrderCard({
   onAddToTruck: (() => void) | null
   empakaNote: string
   onEmpakaChange: (text: string) => void
+  onDelete: () => Promise<void>
 }) {
   const router = useRouter()
   const [editOpen, setEditOpen] = useState(false)
@@ -1689,6 +1778,7 @@ function OrderCard({
         products={products}
         onSave={onUpdateItem}
         onToggleEmpako={onToggleEmpako}
+        onDelete={onDelete}
       />
     </div>
   )
@@ -2505,7 +2595,7 @@ function StopCard({ stop, index, truckId, customerName, orderItems, orderTotalCa
 // ── FulfilledOrderCard ────────────────────────────────────────────────────────
 
 function FulfilledOrderCard({
-  order, customer, totalCases, deliveries, remaining, productById, products, items, viewingDate, onGoToTruck, onUpdateItem, onToggleEmpako,
+  order, customer, totalCases, deliveries, remaining, productById, products, items, viewingDate, onGoToTruck, onUpdateItem, onToggleEmpako, onDelete,
 }: {
   order: Order
   customer: Customer | null
@@ -2519,6 +2609,7 @@ function FulfilledOrderCard({
   onGoToTruck: (truckId: number) => void
   onUpdateItem: (productId: string, cases: number) => Promise<void>
   onToggleEmpako: (productId: string, empako: boolean) => Promise<void>
+  onDelete: () => Promise<void>
 }) {
   const router = useRouter()
   const [showDeliveries, setShowDeliveries] = useState(false)
@@ -2639,6 +2730,7 @@ function FulfilledOrderCard({
         products={products}
         onSave={onUpdateItem}
         onToggleEmpako={onToggleEmpako}
+        onDelete={onDelete}
       />
     </div>
   )
@@ -3109,5 +3201,297 @@ function EmpakaInput({ note, defaultName, onChange }: {
     >
       {note || defaultName || 'Click to set…'}
     </button>
+  )
+}
+
+// ── NewOrderDialog ────────────────────────────────────────────────────────────
+
+function NewOrderDialog({
+  open, onClose, customers: initialCustomers, products, date, onCreated,
+}: {
+  open: boolean
+  onClose: () => void
+  customers: Customer[]
+  products: DeliveryProduct[]
+  date: string
+  onCreated: (order: Order, items: OrderItem[]) => void
+}) {
+  const [customers, setCustomers] = useState<Customer[]>(initialCustomers)
+  const [customerId, setCustomerId] = useState('')
+  const [addingCustomer, setAddingCustomer] = useState(false)
+  const [newCustomerName, setNewCustomerName] = useState('')
+  const [savingCustomer, setSavingCustomer] = useState(false)
+  const [dateType, setDateType] = useState<'specific' | 'range'>('specific')
+  const [deliveryDate, setDeliveryDate] = useState(date)
+  const [dateStart, setDateStart] = useState(date)
+  const [dateEnd, setDateEnd] = useState(date)
+  const [amounts, setAmounts] = useState<Record<string, string>>({})
+  const [empakoState, setEmpakoState] = useState<Record<string, boolean>>({})
+  const [notes, setNotes] = useState('')
+  const [saving, setSaving] = useState(false)
+
+  useEffect(() => {
+    if (open) {
+      setCustomers(initialCustomers)
+      setCustomerId('')
+      setAddingCustomer(false)
+      setNewCustomerName('')
+      setDateType('specific')
+      setDeliveryDate(date)
+      setDateStart(date)
+      setDateEnd(date)
+      setAmounts({})
+      setEmpakoState({})
+      setNotes('')
+    }
+  }, [open])
+
+  async function handleSaveCustomer() {
+    if (!newCustomerName.trim()) return
+    setSavingCustomer(true)
+    const { data, error } = await supabase.from('customers')
+      .insert({ name: newCustomerName.trim(), city: '' })
+      .select().single()
+    setSavingCustomer(false)
+    if (error || !data) { toast('Failed to add customer', 'error'); return }
+    const newC = data as Customer
+    setCustomers(prev => [...prev, newC].sort((a, b) => a.name.localeCompare(b.name)))
+    setCustomerId(String(newC.id))
+    setAddingCustomer(false)
+    setNewCustomerName('')
+    toast('Customer added')
+  }
+
+  async function handleSave() {
+    const cid = parseInt(customerId)
+    if (!cid) { toast('Select a customer', 'error'); return }
+
+    const validItems = products
+      .map(p => ({
+        productId: p.id,
+        cases: parseInt(amounts[p.id] ?? '0') || 0,
+        empako: !SPREAD_PRODUCT_IDS.has(p.id) && (empakoState[p.id] ?? false),
+      }))
+      .filter(i => i.cases > 0)
+    if (!validItems.length) { toast('Enter at least one item', 'error'); return }
+
+    const start = dateType === 'specific' ? deliveryDate : dateStart
+    const end   = dateType === 'specific' ? deliveryDate : dateEnd
+    if (start > end) { toast('End date must be on or after start date', 'error'); return }
+
+    setSaving(true)
+    const { data: order, error: orderErr } = await supabase.from('orders')
+      .insert({
+        customer_id: cid,
+        order_date: new Date().toLocaleDateString('en-CA'),
+        delivery_date_start: start,
+        delivery_date_end: end,
+        status: 'open',
+        notes: notes.trim() || null,
+      })
+      .select().single()
+    if (orderErr || !order) { setSaving(false); toast('Failed to create order', 'error'); return }
+
+    const { data: insertedItems, error: itemsErr } = await supabase.from('order_items')
+      .insert(validItems.map(i => ({ order_id: order.id, product_id: i.productId, cases: i.cases, empako: i.empako })))
+      .select()
+    setSaving(false)
+    if (itemsErr) { toast('Order created but items failed to save', 'error'); return }
+
+    onCreated(order as Order, (insertedItems ?? []) as OrderItem[])
+    toast('Order created')
+    onClose()
+  }
+
+  const totalCases = products.reduce((s, p) => s + (parseInt(amounts[p.id] ?? '0') || 0), 0)
+
+  return (
+    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
+      <DialogContent className="max-w-sm max-h-[90svh] grid-rows-[auto_1fr_auto]">
+        <DialogHeader>
+          <DialogTitle>New Order</DialogTitle>
+        </DialogHeader>
+        <div className="min-h-0 overflow-y-auto space-y-4">
+          {/* Customer */}
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans mb-1.5">Customer</p>
+            {addingCustomer ? (
+              <div className="flex gap-2">
+                <input
+                  autoFocus
+                  type="text"
+                  placeholder="Customer name"
+                  value={newCustomerName}
+                  onChange={e => setNewCustomerName(e.target.value)}
+                  onKeyDown={e => {
+                    if (e.key === 'Enter') handleSaveCustomer()
+                    if (e.key === 'Escape') { setAddingCustomer(false); setNewCustomerName('') }
+                  }}
+                  className="flex-1 px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
+                />
+                <button
+                  onClick={handleSaveCustomer}
+                  disabled={savingCustomer || !newCustomerName.trim()}
+                  className="px-3 py-2 text-xs font-semibold font-sans rounded-lg bg-stone-800 text-white hover:bg-stone-700 disabled:opacity-50 transition-colors"
+                >
+                  {savingCustomer ? '…' : 'Add'}
+                </button>
+                <button
+                  onClick={() => { setAddingCustomer(false); setNewCustomerName('') }}
+                  className="px-2 py-2 text-xs font-sans text-stone-400 hover:text-stone-600 transition-colors"
+                >
+                  Cancel
+                </button>
+              </div>
+            ) : (
+              <div className="flex gap-2">
+                <select
+                  value={customerId}
+                  onChange={e => setCustomerId(e.target.value)}
+                  className="flex-1 px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300 bg-white"
+                >
+                  <option value="">Select customer…</option>
+                  {customers.map(c => (
+                    <option key={c.id} value={c.id}>{c.name}</option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => setAddingCustomer(true)}
+                  className="px-3 py-2 text-xs font-semibold font-sans rounded-lg border border-stone-200 text-stone-500 hover:bg-stone-50 transition-colors whitespace-nowrap"
+                >
+                  + New
+                </button>
+              </div>
+            )}
+          </div>
+
+          {/* Delivery date */}
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans mb-1.5">Delivery Date</p>
+            <div className="flex gap-1 mb-2">
+              {(['specific', 'range'] as const).map(t => (
+                <button
+                  key={t}
+                  onClick={() => setDateType(t)}
+                  className={cn(
+                    'px-3 py-1 text-xs font-sans font-medium rounded-lg border transition-colors',
+                    dateType === t
+                      ? 'bg-stone-800 text-white border-stone-800'
+                      : 'border-stone-200 text-stone-500 hover:bg-stone-50',
+                  )}
+                >
+                  {t === 'specific' ? 'Specific' : 'Range'}
+                </button>
+              ))}
+            </div>
+            {dateType === 'specific' ? (
+              <input
+                type="date"
+                value={deliveryDate}
+                onChange={e => setDeliveryDate(e.target.value)}
+                className="w-full px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
+              />
+            ) : (
+              <div className="flex gap-2 items-center">
+                <input
+                  type="date"
+                  value={dateStart}
+                  onChange={e => setDateStart(e.target.value)}
+                  className="flex-1 px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
+                />
+                <span className="text-stone-400 text-sm flex-shrink-0">–</span>
+                <input
+                  type="date"
+                  value={dateEnd}
+                  onChange={e => setDateEnd(e.target.value)}
+                  className="flex-1 px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
+                />
+              </div>
+            )}
+          </div>
+
+          {/* Items */}
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans mb-1.5">Items</p>
+            <div className="border border-stone-100 rounded-xl overflow-hidden">
+              <div className="grid grid-cols-[1fr_56px_100px] px-4 py-2 bg-stone-50 border-b border-stone-100 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans">
+                <span>Product</span>
+                <span className="text-center">40x1</span>
+                <span className="text-right">Cases</span>
+              </div>
+              {products.map(p => {
+                const val = amounts[p.id] ?? '0'
+                const isSet = (parseInt(val) || 0) > 0
+                const isEmpako = empakoState[p.id] ?? false
+                const isSpread = SPREAD_PRODUCT_IDS.has(p.id)
+                return (
+                  <div
+                    key={p.id}
+                    className={cn(
+                      'grid grid-cols-[1fr_56px_100px] items-center px-4 py-2.5 border-b border-stone-50 last:border-0',
+                      isEmpako && isSet ? 'bg-amber-50/40' : isSet ? 'bg-emerald-50/40' : '',
+                    )}
+                  >
+                    <span className={cn('text-sm font-sans', isSet ? 'text-stone-800 font-medium' : 'text-stone-500')}>
+                      {getProductAbbr(p)}
+                    </span>
+                    {isSpread ? (
+                      <div className="text-center text-stone-300 text-xs select-none">—</div>
+                    ) : (
+                      <div className="flex justify-center">
+                        <input
+                          type="checkbox"
+                          checked={isEmpako}
+                          onChange={e => setEmpakoState(prev => ({ ...prev, [p.id]: e.target.checked }))}
+                          className="w-4 h-4 accent-orange-500 cursor-pointer"
+                        />
+                      </div>
+                    )}
+                    <input
+                      type="number" min={0} value={val}
+                      onChange={e => setAmounts(prev => ({ ...prev, [p.id]: e.target.value }))}
+                      onFocus={e => e.target.select()}
+                      className={cn(
+                        'w-full px-3 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300 [appearance:auto]',
+                        isEmpako && isSet ? 'border-amber-200 bg-white' : isSet ? 'border-emerald-200 bg-white' : 'border-stone-200',
+                      )}
+                    />
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+
+          {/* Notes */}
+          <div>
+            <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans mb-1.5">Notes</p>
+            <textarea
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Optional"
+              rows={2}
+              className="w-full px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300 resize-none"
+            />
+          </div>
+        </div>
+        <DialogFooter>
+          <span className="text-xs font-mono tabular-nums self-center text-stone-400 flex-1">
+            {totalCases > 0 ? `${totalCases} cs` : ''}
+          </span>
+          <button
+            onClick={onClose}
+            className="px-4 py-2 text-sm font-sans font-medium text-stone-500 hover:text-stone-700 transition-colors"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={handleSave} disabled={saving}
+            className="px-5 py-2 text-sm font-semibold font-sans rounded-xl bg-stone-800 text-white hover:bg-stone-700 disabled:opacity-50 transition-colors"
+          >
+            {saving ? 'Saving…' : 'Save'}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }

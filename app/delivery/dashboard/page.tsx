@@ -46,8 +46,7 @@ export default async function Page({
     supabase.from('customers').select('*').eq('active', true).order('name'),
     supabase.from('orders')
       .select('*')
-      .neq('status', 'cancelled')
-      .gte('delivery_date_end', dateOffset(date, -7)),
+      .neq('status', 'cancelled'),
     supabase.from('daily_inventory').select('*').eq('date', date),
     supabase.from('warehouse_daily').select('*').eq('date', date),
     supabase.from('truck_availability').select('*').eq('date', date),
