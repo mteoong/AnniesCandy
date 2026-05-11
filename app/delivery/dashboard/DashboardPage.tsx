@@ -1958,23 +1958,23 @@ function TruckCapacityBar({
       <div className="mt-2 border border-stone-100 rounded-lg overflow-x-auto">
         <table className="w-full text-xs font-sans">
           <thead>
-            <tr className="bg-stone-50 border-b border-stone-100">
+            <tr className="bg-stone-50 border-b border-stone-200">
               <th className="text-left px-3 py-1.5 font-medium text-stone-400 whitespace-nowrap w-40">Client</th>
               {activeProducts.map(p => (
                 <th key={p.id} className="px-2 py-1.5 font-medium text-stone-400 text-right whitespace-nowrap">{getProductAbbr(p)}</th>
               ))}
             </tr>
           </thead>
-          <tbody className="divide-y divide-stone-50">
+          <tbody>
             {hasEmpako && (
-              <tr className="bg-stone-50">
+              <tr className="bg-stone-50 border-b border-stone-200">
                 <td colSpan={1 + activeProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                   20×1
                 </td>
               </tr>
             )}
             {topRows.map(r => (
-              <tr key={r.stop.deliveryId} className="hover:bg-stone-50">
+              <tr key={r.stop.deliveryId} className="hover:bg-stone-50 border-b border-stone-100">
                 <td className="px-3 py-1.5 text-stone-600 whitespace-nowrap w-40">
                   <span className="text-stone-300 mr-1">{r.idx + 1}.</span>{r.label}
                 </td>
@@ -1988,7 +1988,7 @@ function TruckCapacityBar({
                 })}
               </tr>
             ))}
-            <tr className="bg-stone-100 border-t border-stone-200">
+            <tr className={cn('bg-stone-100 border-b border-stone-200', !hasEmpako && 'border-b-0')}>
               <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total</td>
               {activeProducts.map(p => (
                 <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums font-semibold text-stone-700">
@@ -1998,13 +1998,13 @@ function TruckCapacityBar({
             </tr>
             {hasEmpako && (
               <>
-                <tr className="bg-stone-50 border-t-2 border-stone-200">
+                <tr className="bg-stone-50 border-b border-stone-200">
                   <td colSpan={1 + activeProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                     40×1
                   </td>
                 </tr>
                 {bottomRows.map(r => (
-                  <tr key={`emp-${r.stop.deliveryId}`} className="hover:bg-stone-50">
+                  <tr key={`emp-${r.stop.deliveryId}`} className="hover:bg-stone-50 border-b border-stone-100">
                     <td className="px-3 py-1.5 text-stone-600 whitespace-nowrap w-40">
                       <span className="text-stone-300 mr-1">{r.idx + 1}.</span>{r.label}
                     </td>
@@ -2018,7 +2018,7 @@ function TruckCapacityBar({
                     })}
                   </tr>
                 ))}
-                <tr className="bg-stone-100 border-t border-stone-200">
+                <tr className="bg-stone-100">
                   <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total</td>
                   {activeProducts.map(p => (
                     <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums font-semibold text-stone-700">

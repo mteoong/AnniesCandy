@@ -159,7 +159,7 @@ function TruckSummary({
             <div className="overflow-x-auto">
               <table className="w-full text-sm summary-truck-table">
                 <thead>
-                  <tr className="bg-stone-50 sticky top-0">
+                  <tr className="bg-stone-50 sticky top-0 border-b border-stone-200">
                     <th className="text-left px-4 py-2 font-medium text-stone-500 whitespace-nowrap">Client</th>
                     {activeProducts.map(p => (
                       <th key={p.id} className="px-3 py-2 font-medium text-stone-500 text-right whitespace-nowrap">
@@ -168,9 +168,9 @@ function TruckSummary({
                     ))}
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-stone-100">
+                <tbody>
                   {hasEmpako && (
-                    <tr className="bg-stone-50">
+                    <tr className="bg-stone-50 border-b border-stone-200">
                       <td colSpan={1 + activeProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                         20×1
                       </td>
@@ -179,7 +179,7 @@ function TruckSummary({
                   {topRows.map(r => {
                     if (r.stop.kind === 'warehouse') {
                       return (
-                        <tr key="warehouse" className="hover:bg-stone-50">
+                        <tr key="warehouse" className="hover:bg-stone-50 border-b border-stone-100">
                           <td className="px-4 py-2 text-stone-700 font-medium whitespace-nowrap">
                             <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>Warehouse
                           </td>
@@ -193,7 +193,7 @@ function TruckSummary({
                     }
                     const cs = r.stop as CustomerStop
                     return (
-                      <tr key={cs.delivery.id} className="hover:bg-stone-50">
+                      <tr key={cs.delivery.id} className="hover:bg-stone-50 border-b border-stone-100">
                         <td className="px-4 py-2 text-stone-700 whitespace-nowrap">
                           <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>{r.label}
                         </td>
@@ -208,7 +208,7 @@ function TruckSummary({
                       </tr>
                     )
                   })}
-                  <tr className="bg-stone-100 border-t-2 border-stone-200">
+                  <tr className={cn('bg-stone-100 border-b border-stone-200', !hasEmpako && 'border-b-0')}>
                     <td className="px-4 py-2 font-semibold text-stone-700">Total</td>
                     {activeProducts.map(p => (
                       <td key={p.id} className="px-3 py-2 text-right font-semibold text-stone-800">
@@ -218,7 +218,7 @@ function TruckSummary({
                   </tr>
                   {hasEmpako && (
                     <>
-                      <tr className="bg-stone-50 border-t-2 border-stone-200">
+                      <tr className="bg-stone-50 border-b border-stone-200">
                         <td colSpan={1 + activeProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                           40×1
                         </td>
@@ -226,7 +226,7 @@ function TruckSummary({
                       {bottomRows.map(r => {
                         const cs = r.stop as CustomerStop
                         return (
-                          <tr key={`emp-${cs.delivery.id}`} className="hover:bg-stone-50">
+                          <tr key={`emp-${cs.delivery.id}`} className="hover:bg-stone-50 border-b border-stone-100">
                             <td className="px-4 py-2 text-stone-700 whitespace-nowrap">
                               <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>{r.label}
                             </td>
@@ -241,7 +241,7 @@ function TruckSummary({
                           </tr>
                         )
                       })}
-                      <tr className="bg-stone-100 border-t-2 border-stone-200">
+                      <tr className="bg-stone-100">
                         <td className="px-4 py-2 font-semibold text-stone-700">Total</td>
                         {activeProducts.map(p => (
                           <td key={p.id} className="px-3 py-2 text-right font-semibold text-stone-800">
@@ -448,18 +448,16 @@ export function SummaryPage({
         ]
 
         const topRows = topStops.map(s => makeRow(s, 'top'))
-        const topTotalRow = [pdfHasEmpako ? 'Subtotal' : 'Total', ...activeProds.map(p => String(topTotals[p.id] ?? 0))]
-        const separatorRow = ['40x1', ...Array(activeProds.length).fill('')]
+        const topTotalRow = ['Total', ...activeProds.map(p => String(topTotals[p.id] ?? 0))]
+        const separatorRow = [{ content: '40×1', colSpan: 1 + activeProds.length, styles: { halign: 'center', fontStyle: 'bold', textColor: [80, 80, 80] } }]
         const botRows = botStops.map(s => makeRow(s, 'bot'))
         const botTotalRow = ['Total', ...activeProds.map(p => String(botTotals[p.id] ?? 0))]
 
         const topSubtotalIdx = topRows.length
-        let separatorIdx: number | null = null
         let botTotalIdx: number | null = null
 
-        let body: string[][]
+        let body: any[][]
         if (pdfHasEmpako) {
-          separatorIdx = topRows.length + 1
           botTotalIdx = topRows.length + 1 + botRows.length + 1
           body = [...topRows, topTotalRow, separatorRow, ...botRows, botTotalRow]
         } else {
@@ -474,7 +472,7 @@ export function SummaryPage({
             note: orderById.get(s.orderId!)?.empaka_note || s.label,
           }))
 
-        return { truck, head, body, topSubtotalIdx, separatorIdx, botTotalIdx, empakaLabels }
+        return { truck, head, body, topSubtotalIdx, botTotalIdx, empakaLabels }
       })
 
       function drawCutLines() {
@@ -540,11 +538,6 @@ export function SummaryPage({
             if (row === t.topSubtotalIdx || row === t.botTotalIdx) {
               data.cell.styles.fontStyle = 'bold'
               data.cell.styles.fillColor = [240, 240, 240]
-            }
-            if (t.separatorIdx != null && row === t.separatorIdx) {
-              data.cell.styles.fontStyle = 'bold'
-              data.cell.styles.textColor = [80, 80, 80]
-              data.cell.styles.halign = 'center'
             }
           },
         })
