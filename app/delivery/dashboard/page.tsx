@@ -1,6 +1,6 @@
 import { createServerClient } from '@/lib/supabase-server'
 import { DashboardPage } from './DashboardPage'
-import type { DeliveryProduct, Customer, Truck, Order, OrderItem, Delivery, DeliveryItem, WarehouseDrop } from '@/lib/delivery-types'
+import type { DeliveryProduct, Customer, Truck, Order, OrderItem, Delivery, DeliveryItem, WarehouseDrop, BodegaRow } from '@/lib/delivery-types'
 
 export const dynamic = 'force-dynamic'
 
@@ -95,13 +95,44 @@ export default async function Page({
     warehouseMap[r.product_id] = { pickup: r.pickup_orders_total, stock: r.warehouse_stock }
   }
 
+  const regularOrders = (orders ?? []).filter(o => (o as Order).order_type !== 'bodega')
+
+  // Load bodega orders for this date
+  const { data: bodegaOrders } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('order_type', 'bodega')
+    .neq('status', 'cancelled')
+    .lte('delivery_date_start', date)
+    .gte('delivery_date_end', date)
+
+  const bodegaIds = (bodegaOrders ?? []).map((o: Order) => o.id)
+  const { data: bodegaItems } = bodegaIds.length > 0
+    ? await supabase.from('order_items').select('*').in('order_id', bodegaIds)
+    : { data: [] as OrderItem[] }
+
+  const customerMap = new Map(((await supabase.from('customers').select('id,name')).data ?? []).map((c: { id: number; name: string }) => [c.id, c.name]))
+
+  const bodegaRows: BodegaRow[] = (bodegaOrders ?? []).map((order: Order) => {
+    const items: BodegaRow['items'] = {}
+    for (const item of (bodegaItems ?? []).filter((i: OrderItem) => i.order_id === order.id)) {
+      items[item.product_id] = { itemId: item.id, cases: item.cases }
+    }
+    return {
+      orderId: order.id,
+      customerId: order.customer_id,
+      customerName: customerMap.get(order.customer_id) ?? 'Unknown',
+      items,
+    }
+  })
+
   return (
     <DashboardPage
       key={date}
       products={(products ?? []) as DeliveryProduct[]}
       trucks={availableTrucks as Truck[]}
       customers={(customers ?? []) as Customer[]}
-      orders={(orders ?? []) as Order[]}
+      orders={regularOrders as Order[]}
       orderItems={(allOrderItems ?? []) as OrderItem[]}
       deliveries={todayDeliveries}
       deliveryItems={todayDeliveryItems as DeliveryItem[]}
@@ -111,6 +142,7 @@ export default async function Page({
       inventory40x1={inventoryMap40x1}
       warehouse={warehouseMap}
       warehouseDrops={(warehouseDropsRaw ?? []) as WarehouseDrop[]}
+      initialBodegas={bodegaRows}
       date={date}
     />
   )

@@ -16,14 +16,27 @@ import {
 import { Toaster } from '@/components/ui/toast'
 import {
   JOB_COLOR_CONFIG, CANDY_CONFIG, PIECEWISE_PREFIXES, getPiecewiseTypeFromJob,
-  getDailyJobColor,
+  getDailyJobColor, nameInlineFormat,
   type Employee, type PayrollConfig, type HolidayType, type PiecewiseType,
 } from '@/lib/types'
 import { useCompany } from '@/lib/company-context'
 
 type Attendance = 'present' | 'absent' | null
-type WorkerState = { attendance: Attendance; extra: number }
+type DailyRate = '0' | 'Half' | 'Full'
+type WorkerState = { attendance: Attendance; extra: number; dailyRate: DailyRate }
 type CompletionStatus = 'none' | 'partial' | 'full'
+
+function getDailyMultiplier(rate: DailyRate): number {
+  if (rate === 'Full') return 1
+  if (rate === 'Half') return 0.5
+  return 0
+}
+function hoursFromRate(rate: DailyRate): number {
+  return rate === 'Full' ? 8 : rate === 'Half' ? 4 : 0
+}
+function rateFromHours(hours: number): DailyRate {
+  return hours >= 8 ? 'Full' : hours >= 4 ? 'Half' : '0'
+}
 
 type Props = {
   dailyWorkers: Employee[]
@@ -165,7 +178,7 @@ function DraggableCandyWorkerRow({
           ? isPresent ? 'text-slate-200' : attendance === 'absent' ? 'text-slate-500' : 'text-slate-400'
           : isPresent ? 'text-stone-700' : attendance === 'absent' ? 'text-stone-500' : 'text-stone-400',
       )}>
-        {worker.first_name} {worker.last_name}
+        {nameInlineFormat(worker)}
       </span>
       <span className={cn(
         'text-xs font-mono font-semibold flex-shrink-0',
@@ -244,7 +257,7 @@ function GroupDotMenu({ isNightShift, onChangeShift }: { isNightShift: boolean; 
 
 // ── Daily job card (no drag/drop) ─────────────────────────────────────────────
 function DailyJobCard({
-  job, workers, workerStates, config, holiday, saving, onAttendance, onExtra, onMarkAll,
+  job, workers, workerStates, config, holiday, saving, onAttendance, onRate, onExtra, onNightshift, onMarkAll,
 }: {
   job: string
   workers: Employee[]
@@ -253,7 +266,9 @@ function DailyJobCard({
   holiday: HolidayType
   saving: Set<number>
   onAttendance: (w: Employee, v: Attendance) => void
+  onRate: (w: Employee, r: DailyRate) => void
   onExtra: (w: Employee, x: number) => void
+  onNightshift: (w: Employee, nightshift: boolean) => void
   onMarkAll: () => void
 }) {
   const cfg = JOB_COLOR_CONFIG[getDailyJobColor(job)]
@@ -279,14 +294,19 @@ function DailyJobCard({
         </div>
       </div>
       <div className="flex items-center gap-3 px-4 py-1.5 bg-stone-50/60 border-b border-stone-50 text-[10px] font-semibold text-stone-400 uppercase tracking-wider font-sans">
-        <span className="w-16" />
+        <span className="w-11" />
         <span className="flex-1 min-w-0">Name</span>
+        <span className="w-[72px] text-center">Rate</span>
         <span className="w-24 text-right">Extra</span>
         <span className="w-28 text-right">Pay</span>
       </div>
       {workers.map((worker) => {
-        const state = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0 }
-        const pay = state.attendance === 'present' ? calcDailyPay(worker, state.extra, holiday, config) : 0
+        const state = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
+        const mult = getDailyMultiplier(state.dailyRate)
+        const extra = state.attendance === 'present' ? state.extra : 0
+        const pay = state.attendance === null ? 0
+          : mult === 0 ? 0
+          : calcDailyPay({ ...worker, daily_salary: worker.daily_salary * mult }, extra, holiday, config)
         return (
           <DailyWorkerRow
             key={worker.employee_id}
@@ -295,7 +315,9 @@ function DailyJobCard({
             pay={pay}
             saving={saving.has(worker.employee_id)}
             onAttendance={(v) => onAttendance(worker, v)}
+            onRate={(r) => onRate(worker, r)}
             onExtra={(x) => onExtra(worker, x)}
+            onNightshift={(n) => onNightshift(worker, n)}
           />
         )
       })}
@@ -304,14 +326,16 @@ function DailyJobCard({
 }
 
 function DailyWorkerRow({
-  worker, state, pay, saving, onAttendance, onExtra,
+  worker, state, pay, saving, onAttendance, onRate, onExtra, onNightshift,
 }: {
   worker: Employee
   state: WorkerState
   pay: number
   saving: boolean
   onAttendance: (v: Attendance) => void
+  onRate: (r: DailyRate) => void
   onExtra: (x: number) => void
+  onNightshift: (nightshift: boolean) => void
 }) {
   const [extraInput, setExtraInput] = useState(state.extra.toString())
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
@@ -330,13 +354,56 @@ function DailyWorkerRow({
       'flex items-center gap-3 px-4 py-2.5 border-b border-stone-50 last:border-0 transition-colors',
       isPresent ? 'bg-emerald-50/60' : state.attendance === 'absent' ? 'bg-red-100/60' : 'bg-stone-50/60',
     )}>
-      <AttendanceControl value={state.attendance} onChange={onAttendance} />
+      {/* Present checkbox */}
+      <button
+        onClick={() => onAttendance(isPresent ? 'absent' : 'present')}
+        className={cn(
+          'w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 transition-colors cursor-pointer',
+          isPresent ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-stone-300 hover:border-stone-400',
+        )}
+      >
+        {isPresent && (
+          <svg width="9" height="7" viewBox="0 0 9 7" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+            <path d="M1 3.5l2.5 2.5 4.5-5" />
+          </svg>
+        )}
+      </button>
+      {/* Nightshift checkbox */}
+      <button
+        onClick={() => onNightshift(!worker.nightshift)}
+        className={cn(
+          'w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 transition-colors cursor-pointer',
+          worker.nightshift ? 'bg-slate-700 border-slate-700' : 'bg-white border-stone-300 hover:border-stone-400',
+        )}
+      >
+        {worker.nightshift && (
+          <svg width="8" height="8" viewBox="0 0 24 24" fill="white">
+            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
+          </svg>
+        )}
+      </button>
+      {/* Name */}
       <span className={cn('flex-1 min-w-0 text-sm font-medium font-sans truncate',
         isPresent ? 'text-stone-800' : state.attendance === 'absent' ? 'text-stone-500' : 'text-stone-400',
       )}>
-        {worker.first_name} {worker.last_name}
-        {worker.nightshift && <span className="ml-1.5 text-[10px] text-slate-400 font-mono">☽</span>}
+        {nameInlineFormat(worker)}
       </span>
+      {/* Daily rate selector */}
+      <div className="flex text-[10px] font-mono rounded overflow-hidden border border-stone-200 flex-shrink-0 w-[72px]">
+        {(['0', 'Half', 'Full'] as const).map((r) => (
+          <button
+            key={r}
+            onClick={() => onRate(r)}
+            className={cn(
+              'flex-1 py-0.5 transition-colors leading-none cursor-pointer',
+              state.dailyRate === r ? 'bg-stone-700 text-white' : 'text-stone-400 hover:bg-stone-50',
+            )}
+          >
+            {r === 'Half' ? '½' : r === 'Full' ? '1' : '0'}
+          </button>
+        ))}
+      </div>
+      {/* Extra */}
       <div className="relative w-24">
         <span className="absolute left-2 top-1/2 -translate-y-1/2 text-stone-400 text-xs">₱</span>
         <input
@@ -348,10 +415,11 @@ function DailyWorkerRow({
           )}
         />
       </div>
+      {/* Pay */}
       <div className="w-28 text-right">
         {saving
           ? <span className="text-stone-300 text-xs font-mono">saving…</span>
-          : <span className={cn('text-sm font-mono font-semibold', isPresent ? 'text-stone-800' : 'text-stone-300')}>{formatPeso(pay)}</span>
+          : <span className={cn('text-sm font-mono font-semibold', pay > 0 ? 'text-stone-800' : 'text-stone-300')}>{formatPeso(pay)}</span>
         }
       </div>
     </div>
@@ -616,7 +684,7 @@ function WorkerDragOverlay({ worker }: { worker: Employee }) {
   return (
     <div className="bg-white border border-stone-200 shadow-2xl rounded-lg px-3 py-2 w-48 flex items-center gap-2 cursor-grabbing opacity-90">
       <span className="flex-1 text-xs font-medium font-sans text-stone-700 truncate">
-        {worker.first_name} {worker.last_name}
+        {nameInlineFormat(worker)}
       </span>
     </div>
   )
@@ -929,27 +997,29 @@ export function DailyPage({
 
     const { data } = await supabase
       .from('daily_records')
-      .select('employee_id, daily_pay, holiday, pieces, job')
+      .select('employee_id, daily_pay, holiday, pieces, job, hours')
       .eq('date', d)
       .in('employee_id', ids)
 
     const next = new Map<number, WorkerState>()
-    workers.forEach((e) => next.set(e.employee_id, { attendance: null, extra: 0 }))
+    workers.forEach((e) => next.set(e.employee_id, { attendance: null, extra: 0, dailyRate: '0' }))
     const candySums = new Map<string, number>()
     if (data) {
-      data.forEach((r: { employee_id: number; daily_pay: number; holiday: HolidayType; pieces: number; job: string }) => {
+      data.forEach((r: { employee_id: number; daily_pay: number; holiday: HolidayType; pieces: number; job: string; hours: number }) => {
+        const dailyRate = rateFromHours(r.hours ?? 8)
         if (r.daily_pay > 0) {
           const emp = workers.find((e) => e.employee_id === r.employee_id)
-          const base = emp ? calcDailyPay(emp, 0, r.holiday, config) : 0
+          const mult = getDailyMultiplier(dailyRate)
+          const base = emp ? calcDailyPay({ ...emp, daily_salary: emp.daily_salary * mult }, 0, r.holiday, config) : 0
           const extra = Math.max(0, r.daily_pay - base)
-          next.set(r.employee_id, { attendance: 'present', extra: Math.round(extra * 100) / 100 })
+          next.set(r.employee_id, { attendance: 'present', extra: Math.round(extra * 100) / 100, dailyRate })
           // Reconstruct candy per group: pieces = Math.round(candy / presentCount) per worker,
           // so summing all present workers' pieces gives back ≈ total candy
           if (r.pieces > 0 && r.job && getPiecewiseTypeFromJob(r.job)) {
             candySums.set(r.job, (candySums.get(r.job) ?? 0) + r.pieces)
           }
         } else {
-          next.set(r.employee_id, { attendance: 'absent', extra: 0 })
+          next.set(r.employee_id, { attendance: 'absent', extra: 0, dailyRate: '0' })
         }
         if (r.holiday) setHoliday(r.holiday)
       })
@@ -967,9 +1037,12 @@ export function DailyPage({
     if (state.attendance === null) {
       await supabase.from('daily_records').delete().match({ employee_id: worker.employee_id, date })
     } else {
-      const pay = state.attendance === 'present' ? calcDailyPay(worker, state.extra, h, config) : 0
+      const mult = getDailyMultiplier(state.dailyRate)
+      const extra = state.attendance === 'present' ? state.extra : 0
+      const pay = mult === 0 ? 0 : calcDailyPay({ ...worker, daily_salary: worker.daily_salary * mult }, extra, h, config)
       await supabase.from('daily_records').upsert({
-        employee_id: worker.employee_id, date, job: worker.job, hours: 8, pieces: 0,
+        employee_id: worker.employee_id, date, job: worker.job,
+        hours: hoursFromRate(state.dailyRate), pieces: 0,
         daily_pay: pay, nightshift: worker.nightshift, holiday: h,
       }, { onConflict: 'employee_id,date' })
     }
@@ -1036,31 +1109,47 @@ export function DailyPage({
 
   // ── Event handlers ───────────────────────────────────────────────────────────
   const handleDailyAttendance = (worker: Employee, v: Attendance) => {
-    const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0 }
-    const next = { ...cur, attendance: v }
+    const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
+    const next = { ...cur, attendance: v, dailyRate: (v === 'present' ? 'Full' : '0') as DailyRate }
+    setWorkerStates((m) => new Map(m).set(worker.employee_id, next))
+    upsertDailyWorker(worker, next, holiday)
+  }
+
+  const handleDailyRate = (worker: Employee, rate: DailyRate) => {
+    const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
+    const next = { ...cur, dailyRate: rate }
     setWorkerStates((m) => new Map(m).set(worker.employee_id, next))
     upsertDailyWorker(worker, next, holiday)
   }
 
   const handleDailyExtra = (worker: Employee, extra: number) => {
-    const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0 }
+    const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
     const next = { ...cur, extra }
     setWorkerStates((m) => new Map(m).set(worker.employee_id, next))
     upsertDailyWorker(worker, next, holiday)
   }
 
+  const handleDailyNightshift = async (worker: Employee, nightshift: boolean) => {
+    setAllWorkers((prev) => prev.map((w) => w.employee_id === worker.employee_id ? { ...w, nightshift } : w))
+    await supabase.from('employees').update({ nightshift }).eq('employee_id', worker.employee_id)
+    const state = workerStates.get(worker.employee_id)
+    if (state?.attendance !== null && state !== undefined) {
+      await upsertDailyWorker({ ...worker, nightshift }, state, holiday)
+    }
+  }
+
   const handleDailyMarkAll = (workers: Employee[]) => {
     const next = new Map(workerStates)
     workers.forEach((w) => {
-      const cur = next.get(w.employee_id) ?? { attendance: null, extra: 0 }
-      next.set(w.employee_id, { ...cur, attendance: 'present' })
+      const cur = next.get(w.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
+      next.set(w.employee_id, { ...cur, attendance: 'present', dailyRate: 'Full' })
     })
     setWorkerStates(next)
     workers.forEach((w) => upsertDailyWorker(w, next.get(w.employee_id)!, holiday))
   }
 
   const handleComboAttendance = (jobCode: string, workers: Employee[], empId: number, v: Attendance) => {
-    const cur = workerStates.get(empId) ?? { attendance: null, extra: 0 }
+    const cur = workerStates.get(empId) ?? { attendance: null, extra: 0, dailyRate: 'Full' as DailyRate }
     const next = new Map(workerStates).set(empId, { ...cur, attendance: v })
     setWorkerStates(next)
     upsertComboGroup(jobCode, workers, boxesMap.get(jobCode) ?? 0, next, holiday)
@@ -1074,7 +1163,7 @@ export function DailyPage({
   const handleComboMarkAll = (jobCode: string, workers: Employee[]) => {
     const next = new Map(workerStates)
     workers.forEach((w) => {
-      const cur = next.get(w.employee_id) ?? { attendance: null, extra: 0 }
+      const cur = next.get(w.employee_id) ?? { attendance: null, extra: 0, dailyRate: 'Full' as DailyRate }
       next.set(w.employee_id, { ...cur, attendance: 'present' })
     })
     setWorkerStates(next)
@@ -1082,7 +1171,7 @@ export function DailyPage({
   }
 
   const handlePiecewiseAttendance = (jobCode: string, type: PiecewiseType, workers: Employee[], empId: number, v: Attendance) => {
-    const cur = workerStates.get(empId) ?? { attendance: null, extra: 0 }
+    const cur = workerStates.get(empId) ?? { attendance: null, extra: 0, dailyRate: 'Full' as DailyRate }
     const next = new Map(workerStates).set(empId, { ...cur, attendance: v })
     setWorkerStates(next)
     upsertPiecewiseGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, next, holiday)
@@ -1096,7 +1185,7 @@ export function DailyPage({
   const handlePiecewiseMarkAll = (jobCode: string, type: PiecewiseType, workers: Employee[]) => {
     const next = new Map(workerStates)
     workers.forEach((w) => {
-      const cur = next.get(w.employee_id) ?? { attendance: null, extra: 0 }
+      const cur = next.get(w.employee_id) ?? { attendance: null, extra: 0, dailyRate: 'Full' as DailyRate }
       next.set(w.employee_id, { ...cur, attendance: 'present' })
     })
     setWorkerStates(next)
@@ -1196,7 +1285,9 @@ export function DailyPage({
                             job={job} workers={workers} workerStates={workerStates}
                             config={config} holiday={holiday} saving={savingWorkers}
                             onAttendance={handleDailyAttendance}
+                            onRate={handleDailyRate}
                             onExtra={handleDailyExtra}
+                            onNightshift={handleDailyNightshift}
                             onMarkAll={() => handleDailyMarkAll(workers)}
                           />
                         </div>
@@ -1215,7 +1306,9 @@ export function DailyPage({
                             job={job} workers={workers} workerStates={workerStates}
                             config={config} holiday={holiday} saving={savingWorkers}
                             onAttendance={handleDailyAttendance}
+                            onRate={handleDailyRate}
                             onExtra={handleDailyExtra}
+                            onNightshift={handleDailyNightshift}
                             onMarkAll={() => handleDailyMarkAll(workers)}
                           />
                         </div>

@@ -1,9 +1,9 @@
 'use client'
 
-import { useState, useMemo, useCallback } from 'react'
+import { useState, useMemo, useCallback, useEffect } from 'react'
 import { DayPicker } from '@/components/DayPicker'
 import type { DeliveryProduct, Customer, Truck, Order, OrderItem, Delivery, DeliveryItem, WarehouseDrop } from '@/lib/delivery-types'
-import { getProductAbbr } from '@/lib/delivery-types'
+import { getProductAbbr, CONDITIONAL_SHOW_PRODUCT_IDS } from '@/lib/delivery-types'
 import { cn } from '@/lib/utils'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
@@ -46,16 +46,17 @@ type TruckSummaryProps = {
   orderById: Map<number, Order>
   customerById: Map<number, Customer>
   orderItemsByOrderId: Record<number, OrderItem[]>
+  note?: string
   expanded: boolean
   onToggle: () => void
 }
 
 // ── TruckSummary ──────────────────────────────────────────────────────────────
 
-function TruckSummary({
+export function TruckSummary({
   truck, deliveries, itemsByDelivery, drops,
   products, orderById, customerById, orderItemsByOrderId,
-  expanded, onToggle,
+  note, expanded, onToggle,
 }: TruckSummaryProps) {
   const unifiedStops: UnifiedStop[] = useMemo(() => {
     const customerStops: CustomerStop[] = deliveries.map(d => ({
@@ -83,7 +84,9 @@ function TruckSummary({
     }
   }
 
-  const activeProducts = products.filter(p => (productTotals[p.id] ?? 0) > 0)
+  const visibleProducts = products.filter(p =>
+    !CONDITIONAL_SHOW_PRODUCT_IDS.has(p.id) || (productTotals[p.id] ?? 0) > 0
+  )
 
   const empakaStops = useMemo(() =>
     unifiedStops.filter((s): s is CustomerStop => {
@@ -152,16 +155,16 @@ function TruckSummary({
       </button>
 
       <div className={cn("border-t border-stone-200", !expanded && "hidden")}>
-        {activeProducts.length === 0 ? (
+        {unifiedStops.length === 0 ? (
           <p className="px-4 py-3 text-sm text-stone-400">No items recorded.</p>
         ) : (
           <>
             <div className="overflow-x-auto">
-              <table className="w-full text-sm summary-truck-table">
+              <table className="w-full text-sm summary-truck-table [&_td]:align-middle [&_th]:align-middle">
                 <thead>
                   <tr className="bg-stone-50 sticky top-0 border-b border-stone-200">
                     <th className="text-left px-4 py-2 font-medium text-stone-500 whitespace-nowrap">Client</th>
-                    {activeProducts.map(p => (
+                    {visibleProducts.map(p => (
                       <th key={p.id} className="px-3 py-2 font-medium text-stone-500 text-right whitespace-nowrap">
                         {getProductAbbr(p)}
                       </th>
@@ -171,7 +174,7 @@ function TruckSummary({
                 <tbody>
                   {hasEmpako && (
                     <tr className="bg-stone-50 border-b border-stone-200">
-                      <td colSpan={1 + activeProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                      <td colSpan={1 + visibleProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                         20×1
                       </td>
                     </tr>
@@ -181,9 +184,9 @@ function TruckSummary({
                       return (
                         <tr key="warehouse" className="hover:bg-stone-50 border-b border-stone-100">
                           <td className="px-4 py-2 text-stone-700 font-medium whitespace-nowrap">
-                            <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>Warehouse
+                            Warehouse
                           </td>
-                          {activeProducts.map(p => (
+                          {visibleProducts.map(p => (
                             <td key={p.id} className="px-3 py-2 text-right text-stone-700">
                               {r.itemMap[p.id] != null ? r.itemMap[p.id] : <span className="text-stone-200">—</span>}
                             </td>
@@ -195,9 +198,9 @@ function TruckSummary({
                     return (
                       <tr key={cs.delivery.id} className="hover:bg-stone-50 border-b border-stone-100">
                         <td className="px-4 py-2 text-stone-700 whitespace-nowrap">
-                          <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>{r.label}
+                          {r.label}
                         </td>
-                        {activeProducts.map(p => {
+                        {visibleProducts.map(p => {
                           const val = !r.empakoMap[p.id] ? r.itemMap[p.id] : undefined
                           return (
                             <td key={p.id} className="px-3 py-2 text-right text-stone-700">
@@ -209,8 +212,8 @@ function TruckSummary({
                     )
                   })}
                   <tr className={cn('bg-stone-100 border-b border-stone-200', !hasEmpako && 'border-b-0')}>
-                    <td className="px-4 py-2 font-semibold text-stone-700">Total</td>
-                    {activeProducts.map(p => (
+                    <td className="px-4 py-2 font-semibold text-stone-700">{hasEmpako ? 'Total (20×1)' : 'Total'}</td>
+                    {visibleProducts.map(p => (
                       <td key={p.id} className="px-3 py-2 text-right font-semibold text-stone-800">
                         {topTotals[p.id] ?? 0}
                       </td>
@@ -219,7 +222,7 @@ function TruckSummary({
                   {hasEmpako && (
                     <>
                       <tr className="bg-stone-50 border-b border-stone-200">
-                        <td colSpan={1 + activeProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                        <td colSpan={1 + visibleProducts.length} className="px-4 py-1 text-[11px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                           40×1
                         </td>
                       </tr>
@@ -228,9 +231,9 @@ function TruckSummary({
                         return (
                           <tr key={`emp-${cs.delivery.id}`} className="hover:bg-stone-50 border-b border-stone-100">
                             <td className="px-4 py-2 text-stone-700 whitespace-nowrap">
-                              <span className="text-stone-400 text-xs mr-1.5">{r.idx + 1}.</span>{r.label}
+                              {r.label}
                             </td>
-                            {activeProducts.map(p => {
+                            {visibleProducts.map(p => {
                               const val = r.empakoMap[p.id] ? r.itemMap[p.id] : undefined
                               return (
                                 <td key={p.id} className="px-3 py-2 text-right text-stone-700">
@@ -242,8 +245,8 @@ function TruckSummary({
                         )
                       })}
                       <tr className="bg-stone-100">
-                        <td className="px-4 py-2 font-semibold text-stone-700">Total</td>
-                        {activeProducts.map(p => (
+                        <td className="px-4 py-2 font-semibold text-stone-700">Total (40×1)</td>
+                        {visibleProducts.map(p => (
                           <td key={p.id} className="px-3 py-2 text-right font-semibold text-stone-800">
                             {bottomTotals[p.id] ?? 0}
                           </td>
@@ -255,25 +258,20 @@ function TruckSummary({
               </table>
             </div>
 
-            {empakaStops.length > 0 && (
-              <div className="border-t border-amber-100 bg-amber-50/40 px-4 py-3">
-                <p className="text-[10px] font-semibold uppercase tracking-wider text-amber-600 font-sans mb-2">
-                  40x1 Labels
+            {(note || empakaStops.length > 0) && (
+              <div className="border-t border-stone-100 bg-stone-50/40 px-4 py-3">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-500 font-sans mb-2">
+                  Notes
                 </p>
-                <table className="text-sm font-sans">
-                  <tbody>
-                    {empakaStops.map(stop => {
+                <p className="text-xs font-sans text-stone-700 whitespace-pre-wrap">
+                  {[
+                    note?.trim(),
+                    ...empakaStops.map(stop => {
                       const label = stop.order?.empaka_note || stop.customer?.name || '—'
-                      return (
-                        <tr key={stop.delivery.id}>
-                          <td className="pr-3 py-0.5 text-stone-500 text-xs">{stop.customer?.name ?? '—'}</td>
-                          <td className="text-stone-300 text-xs">→</td>
-                          <td className="pl-3 py-0.5 font-semibold text-stone-800">{label}</td>
-                        </tr>
-                      )
-                    })}
-                  </tbody>
-                </table>
+                      return `${stop.customer?.name ?? '—'}: ${label}`
+                    }),
+                  ].filter(Boolean).join('\n')}
+                </p>
               </div>
             )}
           </>
@@ -290,6 +288,15 @@ export function SummaryPage({
 }: Props) {
   const [expandedTrucks, setExpandedTrucks] = useState<Set<number>>(() => new Set(trucks.map(t => t.id)))
   const [exporting, setExporting] = useState(false)
+  const [truckNotes, setTruckNotes] = useState<Record<number, string>>({})
+  useEffect(() => {
+    const result: Record<number, string> = {}
+    for (const t of trucks) {
+      const v = localStorage.getItem(`truck-note-${t.id}-${date}`)
+      if (v) result[t.id] = v
+    }
+    setTruckNotes(result)
+  }, [])
 
   const customerById = useMemo(() => new Map(customers.map(c => [c.id, c])), [customers])
   const orderById    = useMemo(() => new Map(orders.map(o => [o.id, o])), [orders])
@@ -436,7 +443,7 @@ export function SummaryPage({
           }
 
         const makeRow = (s: typeof stops[0], section: 'top' | 'bot'): string[] => [
-          `${s.stopOrder}. ${s.label}`,
+          s.label,
           ...activeProds.map(p => {
             const item = s.items.find((i: any) => i.product_id === p.id)
             if (!item) return '—'
@@ -447,23 +454,6 @@ export function SummaryPage({
           }),
         ]
 
-        const topRows = topStops.map(s => makeRow(s, 'top'))
-        const topTotalRow = ['Total', ...activeProds.map(p => String(topTotals[p.id] ?? 0))]
-        const separatorRow = [{ content: '40×1', colSpan: 1 + activeProds.length, styles: { halign: 'center', fontStyle: 'bold', textColor: [80, 80, 80] } }]
-        const botRows = botStops.map(s => makeRow(s, 'bot'))
-        const botTotalRow = ['Total', ...activeProds.map(p => String(botTotals[p.id] ?? 0))]
-
-        const topSubtotalIdx = topRows.length
-        let botTotalIdx: number | null = null
-
-        let body: any[][]
-        if (pdfHasEmpako) {
-          botTotalIdx = topRows.length + 1 + botRows.length + 1
-          body = [...topRows, topTotalRow, separatorRow, ...botRows, botTotalRow]
-        } else {
-          body = [...topRows, topTotalRow]
-        }
-
         const empakaLabels = stops
           .filter(s => !s.isWh && s.orderId != null &&
             (orderItemsByOrderId[s.orderId]?.some((oi: any) => oi.empako) ?? false))
@@ -472,7 +462,52 @@ export function SummaryPage({
             note: orderById.get(s.orderId!)?.empaka_note || s.label,
           }))
 
-        return { truck, head, body, topSubtotalIdx, botTotalIdx, empakaLabels }
+        const truckNote = truckNotes[truck.id] ?? ''
+        const noteLineCount = truckNote ? truckNote.split('\n').filter((l: string) => l.trim()).length : 0
+        const totalSectionLines = noteLineCount + empakaLabels.length
+        const empakaH = empLineH * (1 + Math.max(2, totalSectionLines === 0 ? 1 : totalSectionLines)) + 2
+        const tableAvailH = qh - titleH - empakaH
+
+        const sectionRowStyle = { halign: 'center', valign: 'middle', fontStyle: 'bold', textColor: [80, 80, 80] }
+        const twentyRow = [{ content: '20×1', colSpan: 1 + activeProds.length, styles: sectionRowStyle }]
+        const topRows = topStops.map(s => makeRow(s, 'top'))
+        const topTotalRow = [pdfHasEmpako ? 'Total (20×1)' : 'Total', ...activeProds.map(p => String(topTotals[p.id] ?? 0))]
+        const separatorRow = [{ content: '40×1', colSpan: 1 + activeProds.length, styles: sectionRowStyle }]
+        const botRows = botStops.map(s => makeRow(s, 'bot'))
+        const botTotalRow = ['Total (40×1)', ...activeProds.map(p => String(botTotals[p.id] ?? 0))]
+
+        // 1 head row + all body rows (section headers and totals count as rows)
+        const naturalRowCount = pdfHasEmpako
+          ? 1 + 1 + topRows.length + 1 + 1 + botRows.length + 1
+          : 1 + topRows.length + 1
+        const numFillers = Math.max(0, Math.floor((tableAvailH - rowH * naturalRowCount) / rowH))
+        const emptyRow: any[] = new Array(1 + activeProds.length).fill('')
+
+        let topSubtotalIdx: number
+        let botTotalIdx: number | null = null
+        let body: any[][]
+
+        if (pdfHasEmpako) {
+          const topFillers = Math.ceil(numFillers / 2)
+          const botFillers = numFillers - topFillers
+          topSubtotalIdx = 1 + topRows.length + topFillers
+          botTotalIdx = 1 + topRows.length + topFillers + 1 + 1 + botRows.length + botFillers
+          body = [
+            twentyRow,
+            ...topRows,
+            ...Array(topFillers).fill(null).map(() => [...emptyRow]),
+            topTotalRow,
+            separatorRow,
+            ...botRows,
+            ...Array(botFillers).fill(null).map(() => [...emptyRow]),
+            botTotalRow,
+          ]
+        } else {
+          topSubtotalIdx = topRows.length + numFillers
+          body = [...topRows, ...Array(numFillers).fill(null).map(() => [...emptyRow]), topTotalRow]
+        }
+
+        return { truck, head, body, topSubtotalIdx, botTotalIdx, empakaLabels, truckNote }
       })
 
       function drawCutLines() {
@@ -516,18 +551,25 @@ export function SummaryPage({
           theme: 'grid',
           styles: {
             fontSize: 6.5,
-            cellPadding: { top: 1, bottom: 1, left: 1.5, right: 1.5 },
+            cellPadding: { top: 0.6, bottom: 0.6, left: 1.2, right: 1.2 },
             minCellHeight: rowH,
-            overflow: 'linebreak',   // wrap text, never truncate
+            overflow: 'linebreak',
             halign: 'center',
+            valign: 'middle',
+            lineWidth: 0.05,
+          },
+          bodyStyles: {
+            fillColor: false as any,
           },
           headStyles: {
-            fillColor: [28, 25, 23] as [number, number, number],
-            textColor: 255,
+            fillColor: [190, 190, 190] as [number, number, number],
+            textColor: [40, 40, 40] as [number, number, number],
             fontSize: 6.5,
             minCellHeight: rowH,
             overflow: 'linebreak',
             halign: 'center',
+            valign: 'middle',
+            fontStyle: 'bold',
           },
           // Client column narrower so product columns have room for numbers
           columnStyles: { 0: { cellWidth: 28, halign: 'left' as const } },
@@ -542,17 +584,24 @@ export function SummaryPage({
           },
         })
 
-        // Always draw empaka section at a fixed position anchored to the quadrant bottom
-        const labelLines = Math.max(2, t.empakaLabels.length)
-        let y = qy + qh - empLineH * (1 + labelLines)
+        // Always draw notes section at a fixed position anchored to the quadrant bottom
+        const noteLines = t.truckNote ? t.truckNote.split('\n').filter((l: string) => l.trim()) : []
+        const totalContentLines = noteLines.length + t.empakaLabels.length
+        const reservedLines = Math.max(2, totalContentLines === 0 ? 1 : totalContentLines)
+        let y = qy + qh - empLineH * (1 + reservedLines)
         doc.setFontSize(6)
         doc.setFont('helvetica', 'bold')
-        doc.text('40x1 Labels', qx, y)
+        doc.text('Notes', qx, y)
         y += empLineH
-        if (t.empakaLabels.length === 0) {
+        if (totalContentLines === 0) {
           doc.setFont('helvetica', 'normal')
-          doc.text('None', qx, y)
+          doc.text('—', qx, y)
         } else {
+          for (const line of noteLines) {
+            doc.setFont('helvetica', 'normal')
+            doc.text(line, qx, y)
+            y += empLineH
+          }
           for (const lbl of t.empakaLabels) {
             doc.setFont('helvetica', 'bold')
             doc.text(lbl.clientName, qx, y)
@@ -568,7 +617,7 @@ export function SummaryPage({
     } finally {
       setExporting(false)
     }
-  }, [activeTrucks, deliveriesByTruck, dropsByTruck, itemsByDelivery, orderById, customerById, orderItemsByOrderId, products, date, dateLabel])
+  }, [activeTrucks, deliveriesByTruck, dropsByTruck, itemsByDelivery, orderById, customerById, orderItemsByOrderId, products, date, dateLabel, truckNotes])
 
   return (
     <div className="min-h-screen bg-canvas">
@@ -609,6 +658,7 @@ export function SummaryPage({
               orderById={orderById}
               customerById={customerById}
               orderItemsByOrderId={orderItemsByOrderId}
+              note={truckNotes[truck.id]}
               expanded={expandedTrucks.has(truck.id)}
               onToggle={() => toggle(truck.id)}
             />

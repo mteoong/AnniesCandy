@@ -31,8 +31,10 @@ import {
   DialogFooter,
 } from '@/components/ui/dialog'
 import { getOrderRemaining, type OrderRemaining } from '@/lib/delivery-remaining'
-import type { DeliveryProduct, Customer, Truck, Order, OrderItem, Delivery, DeliveryItem, WarehouseDrop } from '@/lib/delivery-types'
-import { getProductAbbr, SPREAD_PRODUCT_IDS } from '@/lib/delivery-types'
+import type { DeliveryProduct, Customer, Truck, Order, OrderItem, Delivery, DeliveryItem, WarehouseDrop, BodegaRow } from '@/lib/delivery-types'
+import { getProductAbbr, SPREAD_PRODUCT_IDS, CONDITIONAL_SHOW_PRODUCT_IDS } from '@/lib/delivery-types'
+import { BodegaTable } from '../BodegaTable'
+import { TruckSummary } from '../summary/SummaryPage'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -59,6 +61,7 @@ type Props = {
   inventory40x1: Record<string, number>
   warehouse: Record<string, { pickup: number; stock: number }>
   warehouseDrops: WarehouseDrop[]
+  initialBodegas: BodegaRow[]
   date: string
 }
 
@@ -179,7 +182,7 @@ function orderDateLabel(order: Order, viewingDate: string): string {
 export function DashboardPage({
   products, trucks, customers, orders, orderItems,
   deliveries, deliveryItems, allOrderDeliveries, allOrderDeliveryItems,
-  inventory, inventory40x1, warehouse, warehouseDrops, date,
+  inventory, inventory40x1, warehouse, warehouseDrops, initialBodegas, date,
 }: Props) {
   const initialStops = useMemo(() => buildInitialStops(deliveries, deliveryItems, trucks, warehouseDrops), [])
 
@@ -188,7 +191,9 @@ export function DashboardPage({
   const [localOrderItems, setLocalOrderItems] = useState<OrderItem[]>(orderItems)
   const localOrderItemsRef = useRef<OrderItem[]>(orderItems)
   const [localAllDeliveries, setLocalAllDeliveries] = useState<Delivery[]>(allOrderDeliveries)
+  const localAllDeliveriesRef = useRef<Delivery[]>(allOrderDeliveries)
   const [localAllDeliveryItems, setLocalAllDeliveryItems] = useState<DeliveryItem[]>(allOrderDeliveryItems)
+  const localAllDeliveryItemsRef = useRef<DeliveryItem[]>(allOrderDeliveryItems)
   const [selectedTruckId, setSelectedTruckId] = useState<number | null>(trucks[0]?.id ?? null)
   const [activeDragId, setActiveDragId] = useState<string | null>(null)
   const [partialDialog, setPartialDialog] = useState<{
@@ -214,8 +219,6 @@ export function DashboardPage({
   const inventory40x1EditTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const [editingInventory40x1Id, setEditingInventory40x1Id] = useState<string | null>(null)
   const [editInventory40x1Value, setEditInventory40x1Value] = useState('')
-  const [convertDialogOpen, setConvertDialogOpen] = useState(false)
-  const [convertAmounts, setConvertAmounts] = useState<Record<string, string>>({})
 
   const [empakaByOrder, setEmpakaByOrder] = useState<Record<number, string>>(() => {
     const init: Record<number, string> = {}
@@ -232,6 +235,32 @@ export function DashboardPage({
   const warehouseEditTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const [editingWarehouseCell, setEditingWarehouseCell] = useState<{ productId: string; field: 'pickup' | 'stock' } | null>(null)
   const [editWarehouseValue, setEditWarehouseValue] = useState('')
+
+  const [bodegas, setBodegas] = useState<BodegaRow[]>(initialBodegas)
+  const bodegaRef = useRef<BodegaRow[]>(initialBodegas)
+  const bodegaTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const [bodegaDialogOpen, setBodegaDialogOpen] = useState(false)
+
+  const [showSummary, setShowSummary] = useState(false)
+  const [summaryExpanded, setSummaryExpanded] = useState<Set<number>>(() => new Set(trucks.map(t => t.id)))
+
+  const [truckNotes, setTruckNotes] = useState<Record<number, string>>({})
+  useEffect(() => {
+    const result: Record<number, string> = {}
+    for (const t of trucks) {
+      const v = localStorage.getItem(`truck-note-${t.id}-${date}`)
+      if (v) result[t.id] = v
+    }
+    setTruckNotes(result)
+  }, [])
+  const handleTruckNoteChange = useCallback((truckId: number, note: string) => {
+    setTruckNotes(prev => ({ ...prev, [truckId]: note }))
+    if (note) localStorage.setItem(`truck-note-${truckId}-${date}`, note)
+    else localStorage.removeItem(`truck-note-${truckId}-${date}`)
+  }, [date])
+
+  useEffect(() => { localAllDeliveriesRef.current = localAllDeliveries }, [localAllDeliveries])
+  useEffect(() => { localAllDeliveryItemsRef.current = localAllDeliveryItems }, [localAllDeliveryItems])
 
   function mutStops(fn: (prev: Map<number, TruckStop[]>) => Map<number, TruckStop[]>) {
     setStops(prev => {
@@ -264,6 +293,24 @@ export function DashboardPage({
     return m
   }, [localOrderItems])
 
+  // ── Summary panel data (converts local stops → Delivery/DeliveryItem shape) ─
+  const summaryData = useMemo(() => trucks.map(truck => {
+    const truckStops = stops.get(truck.id) ?? []
+    const nonWhStops = truckStops.filter(s => !s.isWarehouseDrop)
+    const fakeDels: Delivery[] = nonWhStops.map(s => ({
+      id: s.deliveryId, order_id: s.orderId!, truck_id: truck.id,
+      delivery_date: date, stop_order: s.stopOrder, finalized: s.finalized, created_at: '',
+    }))
+    const fakeItems: Record<number, DeliveryItem[]> = {}
+    for (const s of nonWhStops) {
+      fakeItems[s.deliveryId] = s.items.map((item, idx) => ({
+        id: idx, delivery_id: s.deliveryId, product_id: item.productId, cases: item.cases,
+      }))
+    }
+    const drops = localWarehouseDrops.filter(d => d.truck_id === truck.id)
+    return { truck, deliveries: fakeDels, itemsByDelivery: fakeItems, drops }
+  }), [trucks, stops, localWarehouseDrops, date])
+
   // ── Remaining (partial delivery) ─────────────────────────────────────────
 
   const visibleOrders = useMemo(() => {
@@ -292,28 +339,47 @@ export function DashboardPage({
 
   const inventoryDisplayProducts = products
 
-  const assignedByProduct = useMemo(() => {
-    const acc: Record<string, number> = {}
+  const { assignedEmpako, assignedRegular } = useMemo(() => {
+    const assignedEmpako: Record<string, number> = {}
+    const assignedRegular: Record<string, number> = {}
     for (const arr of stops.values()) {
       for (const stop of arr) {
         const ois = stop.orderId ? (orderItemsByOrder[stop.orderId] ?? []) : []
         for (const item of stop.items) {
           const isEmpako = !SPREAD_PRODUCT_IDS.has(item.productId) &&
             (ois.find(i => i.product_id === item.productId)?.empako ?? false)
-          acc[item.productId] = (acc[item.productId] ?? 0) + (isEmpako ? item.cases * 2 : item.cases)
+          if (isEmpako) {
+            assignedEmpako[item.productId] = (assignedEmpako[item.productId] ?? 0) + item.cases
+          } else {
+            assignedRegular[item.productId] = (assignedRegular[item.productId] ?? 0) + item.cases
+          }
         }
       }
     }
-    return acc
+    return { assignedEmpako, assignedRegular }
   }, [stops, orderItemsByOrder])
+
+  // How many 40x1 cases remain after empako assignments consume them first
+  const remaining40x1 = useMemo((): Record<string, number> => {
+    const out: Record<string, number> = {}
+    for (const p of inventoryDisplayProducts) {
+      out[p.id] = Math.max(0, (localInventory40x1[p.id] ?? 0) - (assignedEmpako[p.id] ?? 0))
+    }
+    return out
+  }, [inventoryDisplayProducts, assignedEmpako, localInventory40x1])
 
   const remainingInventory = useMemo((): Record<string, number> => {
     const out: Record<string, number> = {}
     for (const p of inventoryDisplayProducts) {
-      out[p.id] = (localInventory[p.id] ?? 0) - (assignedByProduct[p.id] ?? 0)
+      const inv40x1      = localInventory40x1[p.id] ?? 0
+      const empako       = assignedEmpako[p.id] ?? 0
+      const regular      = assignedRegular[p.id] ?? 0
+      // Empako cases not covered by 40x1 stock each consume 2 regular cases
+      const empakoFromRegular = Math.max(0, empako - inv40x1)
+      out[p.id] = (localInventory[p.id] ?? 0) - regular - empakoFromRegular * 2
     }
     return out
-  }, [inventoryDisplayProducts, assignedByProduct, localInventory])
+  }, [inventoryDisplayProducts, assignedEmpako, assignedRegular, localInventory, localInventory40x1])
 
   const truckLoads = useMemo((): Record<number, number> => {
     const out: Record<number, number> = {}
@@ -349,6 +415,17 @@ export function DashboardPage({
     return out
   }, [stops, orderItemsByOrder])
 
+  // Pickup totals derived from bodega orders — drives the warehouse Orders column
+  const bodegaPickup = useMemo((): Record<string, number> => {
+    const totals: Record<string, number> = {}
+    for (const row of bodegas) {
+      for (const [pid, item] of Object.entries(row.items)) {
+        totals[pid] = (totals[pid] ?? 0) + item.cases
+      }
+    }
+    return totals
+  }, [bodegas])
+
   // Cases being dropped at the warehouse today, per product (across all trucks)
   const dropsByProduct = useMemo((): Record<string, number> => {
     const out: Record<string, number> = {}
@@ -358,12 +435,25 @@ export function DashboardPage({
     return out
   }, [localWarehouseDrops])
 
+  // Orders fully fulfilled with a delivery on today's date — stay in Orders tab, shown green
+  const todayFulfilled = useMemo(
+    () => visibleOrders.filter(o => {
+      const rem = orderRemainingMap.get(o.id)
+      if (!rem || rem.totalOrdered === 0 || rem.totalRemaining > 0) return false
+      return localAllDeliveries.some(d => d.order_id === o.id && d.delivery_date === date)
+    }),
+    [visibleOrders, orderRemainingMap, localAllDeliveries, date],
+  )
+
   const fulfilledOrders = useMemo(
     () => visibleOrders.filter(o => {
       const rem = orderRemainingMap.get(o.id)
-      return rem && rem.totalOrdered > 0 && rem.totalRemaining === 0 && o.delivery_date_end >= sevenDaysAgo
+      if (!rem || rem.totalOrdered === 0 || rem.totalRemaining > 0) return false
+      if (o.delivery_date_end < sevenDaysAgo) return false
+      // Exclude orders fulfilled today — those show in the Orders tab instead
+      return !localAllDeliveries.some(d => d.order_id === o.id && d.delivery_date === date)
     }),
-    [visibleOrders, orderRemainingMap, sevenDaysAgo],
+    [visibleOrders, orderRemainingMap, localAllDeliveries, date, sevenDaysAgo],
   )
 
   // ── Unassigned orders ─────────────────────────────────────────────────────
@@ -415,7 +505,33 @@ export function DashboardPage({
       const { error } = await supabase.from('order_items').insert({ order_id: orderId, product_id: productId, cases, empako: currentEmpako })
       if (error) toast('Failed to save item', 'error')
     }
-  }, [])
+
+    // Sync delivery_items for today's delivery (fulfilled orders shown in Orders tab)
+    const todayDelivery = localAllDeliveriesRef.current.find(
+      d => d.order_id === orderId && d.delivery_date === date,
+    )
+    if (todayDelivery) {
+      await supabase.from('delivery_items').delete().eq('delivery_id', todayDelivery.id).eq('product_id', productId)
+      if (cases > 0) {
+        await supabase.from('delivery_items').insert({ delivery_id: todayDelivery.id, product_id: productId, cases })
+      }
+      setLocalAllDeliveryItems(prev => {
+        const without = prev.filter(di => !(di.delivery_id === todayDelivery.id && di.product_id === productId))
+        if (cases <= 0) return without
+        return [...without, { id: -Date.now() - 1, delivery_id: todayDelivery.id, product_id: productId, cases }]
+      })
+      mutStops(prev => {
+        const next = new Map(prev)
+        const arr = (prev.get(todayDelivery.truck_id) ?? []).map(s => {
+          if (s.deliveryId !== todayDelivery.id) return s
+          const withoutProd = s.items.filter(i => i.productId !== productId)
+          return { ...s, items: cases > 0 ? [...withoutProd, { productId, cases }] : withoutProd }
+        })
+        next.set(todayDelivery.truck_id, arr)
+        return next
+      })
+    }
+  }, [date])
 
   async function handleToggleOrderItemEmpako(orderId: number, productId: string, empako: boolean) {
     syncLocalOrderItems(prev => prev.map(i =>
@@ -458,38 +574,6 @@ export function DashboardPage({
     }, 500))
   }
 
-  async function handleBatchConvert40x1(amounts: Record<string, string>) {
-    const newInv = { ...localInventoryRef.current }
-    const newInv40 = { ...localInventory40x1Ref.current }
-    const toSave: { productId: string; new20x1: number; new40x1: number }[] = []
-
-    for (const [productId, raw] of Object.entries(amounts)) {
-      const amount = parseInt(raw) || 0
-      if (amount <= 0) continue
-      const current40x1 = newInv40[productId] ?? 0
-      const safe = Math.min(amount, current40x1)
-      if (safe <= 0) continue
-      newInv40[productId] = current40x1 - safe
-      newInv[productId] = (newInv[productId] ?? 0) + safe * 2
-      toSave.push({ productId, new20x1: newInv[productId], new40x1: newInv40[productId] })
-    }
-
-    if (toSave.length === 0) { toast('Nothing to convert', 'error'); return }
-
-    localInventoryRef.current = newInv
-    localInventory40x1Ref.current = newInv40
-    setLocalInventory({ ...newInv })
-    setLocalInventory40x1({ ...newInv40 })
-
-    await Promise.all(toSave.map(({ productId, new20x1, new40x1 }) =>
-      supabase.from('daily_inventory')
-        .upsert({ date, product_id: productId, cases_available: new20x1, cases_available_40x1: new40x1 }, { onConflict: 'date,product_id' })
-        .then(({ error }) => { if (error) toast('Failed to convert cases', 'error') })
-    ))
-    toast(`Converted 40x1 → 20x1`)
-    setConvertDialogOpen(false)
-  }
-
   function handleEmpakaChange(orderId: number, text: string) {
     setEmpakaByOrder(prev => ({ ...prev, [orderId]: text }))
     const existing = empakaTimers.current.get(orderId)
@@ -514,20 +598,75 @@ export function DashboardPage({
     setEmpakaByOrder(prev => ({ ...prev, [order.id]: '' }))
   }, [])
 
-  function handleWarehouseEdit(productId: string, field: 'pickup' | 'stock', raw: string) {
+  function handleWarehouseEdit(productId: string, field: 'stock', raw: string) {
     const val = parseInt(raw) || 0
     const prev = localWarehouseRef.current[productId] ?? { pickup: 0, stock: 0 }
-    const next = { ...prev, [field]: val }
-    localWarehouseRef.current = { ...localWarehouseRef.current, [productId]: next }
+    localWarehouseRef.current = { ...localWarehouseRef.current, [productId]: { ...prev, stock: val } }
     setLocalWarehouse({ ...localWarehouseRef.current })
     const existing = warehouseEditTimers.current.get(productId)
     if (existing) clearTimeout(existing)
     warehouseEditTimers.current.set(productId, setTimeout(() => {
       warehouseEditTimers.current.delete(productId)
-      const vals = localWarehouseRef.current[productId] ?? { pickup: 0, stock: 0 }
+      const stock = localWarehouseRef.current[productId]?.stock ?? 0
+      const pickup = bodegaRef.current.reduce((s, r) => s + (r.items[productId]?.cases ?? 0), 0)
       supabase.from('warehouse_daily')
-        .upsert({ date, product_id: productId, pickup_orders_total: vals.pickup, warehouse_stock: vals.stock }, { onConflict: 'date,product_id' })
+        .upsert({ date, product_id: productId, pickup_orders_total: pickup, warehouse_stock: stock }, { onConflict: 'date,product_id' })
         .then(({ error }) => { if (error) toast('Failed to save warehouse', 'error') })
+    }, 500))
+  }
+
+  function handleBodegaChange(orderId: number, productId: string, raw: string) {
+    const val = Math.max(0, parseInt(raw) || 0)
+
+    bodegaRef.current = bodegaRef.current.map(row => {
+      if (row.orderId !== orderId) return row
+      return {
+        ...row,
+        items: { ...row.items, [productId]: { itemId: row.items[productId]?.itemId ?? null, cases: val } },
+      }
+    })
+    setBodegas([...bodegaRef.current])
+
+    const key = `${orderId}-${productId}`
+    const existing = bodegaTimers.current.get(key)
+    if (existing) clearTimeout(existing)
+    bodegaTimers.current.set(key, setTimeout(async () => {
+      bodegaTimers.current.delete(key)
+
+      const row = bodegaRef.current.find(r => r.orderId === orderId)
+      if (!row) return
+      const item = row.items[productId]
+      const cases = item?.cases ?? 0
+      const itemId = item?.itemId ?? null
+
+      if (cases === 0 && itemId !== null) {
+        const { error } = await supabase.from('order_items').delete().eq('id', itemId)
+        if (error) { toast('Failed to save', 'error'); return }
+        bodegaRef.current = bodegaRef.current.map(r =>
+          r.orderId !== orderId ? r : { ...r, items: { ...r.items, [productId]: { itemId: null, cases: 0 } } }
+        )
+        setBodegas([...bodegaRef.current])
+      } else if (cases > 0 && itemId === null) {
+        const { data, error } = await supabase.from('order_items')
+          .insert({ order_id: orderId, product_id: productId, cases, empako: false })
+          .select('id').single()
+        if (error || !data) { toast('Failed to save', 'error'); return }
+        const newId = (data as { id: number }).id
+        bodegaRef.current = bodegaRef.current.map(r =>
+          r.orderId !== orderId ? r : { ...r, items: { ...r.items, [productId]: { itemId: newId, cases } } }
+        )
+        setBodegas([...bodegaRef.current])
+      } else if (cases > 0 && itemId !== null) {
+        const { error } = await supabase.from('order_items').update({ cases }).eq('id', itemId)
+        if (error) { toast('Failed to save', 'error'); return }
+      }
+
+      // Sync updated pickup total to warehouse_daily
+      const pickup = bodegaRef.current.reduce((s, r) => s + (r.items[productId]?.cases ?? 0), 0)
+      const stock = localWarehouseRef.current[productId]?.stock ?? 0
+      supabase.from('warehouse_daily')
+        .upsert({ date, product_id: productId, pickup_orders_total: pickup, warehouse_stock: stock }, { onConflict: 'date,product_id' })
+        .then(({ error: wErr }) => { if (wErr) console.error('Failed to sync warehouse pickup', wErr) })
     }, 500))
   }
 
@@ -537,30 +676,43 @@ export function DashboardPage({
     items: { productId: string; cases: number; empako?: boolean }[],
     truckId: number,
   ): boolean {
-    // Current 20x1-equivalent assigned across all stops (empako counts ×2)
-    const currentAssigned: Record<string, number> = {}
+    // Tally all currently assigned cases, split by empako vs regular
+    const totalEmpako: Record<string, number> = {}
+    const totalRegular: Record<string, number> = {}
     for (const arr of stopsRef.current.values()) {
       for (const stop of arr) {
         const ois = stop.orderId ? (orderItemsByOrder[stop.orderId] ?? []) : []
         for (const item of stop.items) {
           const isEmpako = !SPREAD_PRODUCT_IDS.has(item.productId) &&
             (ois.find(i => i.product_id === item.productId)?.empako ?? false)
-          currentAssigned[item.productId] = (currentAssigned[item.productId] ?? 0) +
-            (isEmpako ? item.cases * 2 : item.cases)
+          if (isEmpako) {
+            totalEmpako[item.productId] = (totalEmpako[item.productId] ?? 0) + item.cases
+          } else {
+            totalRegular[item.productId] = (totalRegular[item.productId] ?? 0) + item.cases
+          }
         }
       }
     }
 
-    // How much 20x1 inventory the new items need (empako counts ×2)
-    const itemSum: Record<string, number> = {}
+    // Add new items
     for (const i of items) {
-      const impact = (!SPREAD_PRODUCT_IDS.has(i.productId) && i.empako) ? i.cases * 2 : i.cases
-      itemSum[i.productId] = (itemSum[i.productId] ?? 0) + impact
+      const isEmpako = !SPREAD_PRODUCT_IDS.has(i.productId) && (i.empako ?? false)
+      if (isEmpako) {
+        totalEmpako[i.productId] = (totalEmpako[i.productId] ?? 0) + i.cases
+      } else {
+        totalRegular[i.productId] = (totalRegular[i.productId] ?? 0) + i.cases
+      }
     }
 
-    for (const [productId, needed] of Object.entries(itemSum)) {
-      const available = (localInventoryRef.current[productId] ?? 0) - (currentAssigned[productId] ?? 0)
-      if (available < needed) {
+    for (const productId of new Set([...Object.keys(totalEmpako), ...Object.keys(totalRegular)])) {
+      const inv40x1 = localInventory40x1Ref.current[productId] ?? 0
+      const inv     = localInventoryRef.current[productId] ?? 0
+      const empako  = totalEmpako[productId] ?? 0
+      const regular = totalRegular[productId] ?? 0
+      // Empako cases first consume 40x1 stock 1:1; overflow hits regular at 2:1
+      const empakoFromRegular = Math.max(0, empako - inv40x1)
+      const regularConsumed   = regular + empakoFromRegular * 2
+      if (regularConsumed > inv) {
         toast(`Not enough ${productById.get(productId)?.name ?? productId}`, 'error')
         return false
       }
@@ -988,40 +1140,46 @@ export function DashboardPage({
             {/* 40x1 stock */}
             {inventoryDisplayProducts.some(p => !SPREAD_PRODUCT_IDS.has(p.id)) && (
               <div className="p-4 border-b border-stone-100">
-                <div className="flex items-center justify-between mb-3">
-                  <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans">40x1 Stock</p>
-                  <button
-                    onClick={() => { setConvertDialogOpen(true); setConvertAmounts({}) }}
-                    className="text-[10px] font-semibold font-sans text-orange-500 hover:text-orange-700 transition-colors"
-                  >
-                    Convert →
-                  </button>
-                </div>
-                <div className="space-y-1.5">
+                <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans mb-3">40x1 Stock</p>
+                <div className="space-y-3">
                   {inventoryDisplayProducts.filter(p => !SPREAD_PRODUCT_IDS.has(p.id)).map(p => {
-                    const stock40x1     = localInventory40x1[p.id] ?? 0
-                    const isEditing40x1 = editingInventory40x1Id === p.id
+                    const rem40       = remaining40x1[p.id] ?? 0
+                    const total40     = localInventory40x1[p.id] ?? 0
+                    const low40       = rem40 <= 0 && total40 > 0
+                    const isEditing40 = editingInventory40x1Id === p.id
                     return (
-                      <div key={p.id} className="flex items-center justify-between gap-1">
-                        <span className="text-xs font-sans text-stone-600 truncate min-w-0">
-                          {p.name}
-                        </span>
-                        {isEditing40x1 ? (
-                          <input
-                            type="number" min={0} value={editInventory40x1Value} autoFocus
-                            onChange={e => { setEditInventory40x1Value(e.target.value); handleInventory40x1Edit(p.id, e.target.value) }}
-                            onBlur={() => setEditingInventory40x1Id(null)}
-                            onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingInventory40x1Id(null) }}
-                            className="w-12 text-xs font-mono text-stone-700 font-semibold text-right bg-stone-100 rounded px-1 focus:outline-none focus:ring-1 focus:ring-stone-400 [appearance:textfield] tabular-nums"
+                      <div key={p.id}>
+                        <div className="flex items-center justify-between mb-0.5 gap-1">
+                          <span className="text-xs font-sans text-stone-600 truncate min-w-0">{p.name}</span>
+                          <div className="flex items-center gap-0.5 flex-shrink-0">
+                            <span className={cn('text-xs font-mono font-semibold tabular-nums', low40 ? 'text-red-600' : 'text-stone-700')}>
+                              {rem40}
+                            </span>
+                            <span className="text-xs font-mono text-stone-400">/</span>
+                            {isEditing40 ? (
+                              <input
+                                type="number" min={0} value={editInventory40x1Value} autoFocus
+                                onChange={e => { setEditInventory40x1Value(e.target.value); handleInventory40x1Edit(p.id, e.target.value) }}
+                                onBlur={() => setEditingInventory40x1Id(null)}
+                                onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingInventory40x1Id(null) }}
+                                className="w-10 text-xs font-mono text-stone-700 font-semibold text-right bg-stone-100 rounded px-1 focus:outline-none focus:ring-1 focus:ring-stone-400 [appearance:textfield] tabular-nums"
+                              />
+                            ) : (
+                              <button
+                                onClick={() => { setEditingInventory40x1Id(p.id); setEditInventory40x1Value(String(total40)) }}
+                                className="text-xs font-mono text-stone-400 hover:text-stone-700 hover:underline tabular-nums transition-colors"
+                              >
+                                {total40}
+                              </button>
+                            )}
+                          </div>
+                        </div>
+                        <div className="h-1 bg-stone-100 rounded-full overflow-hidden">
+                          <div
+                            className={cn('h-full rounded-full', low40 ? 'bg-red-400' : 'bg-amber-400')}
+                            style={{ width: `${total40 > 0 ? Math.max(0, Math.min(100, rem40 / total40 * 100)) : 0}%` }}
                           />
-                        ) : (
-                          <button
-                            onClick={() => { setEditingInventory40x1Id(p.id); setEditInventory40x1Value(String(stock40x1)) }}
-                            className="text-xs font-mono text-stone-500 hover:text-stone-700 hover:underline tabular-nums transition-colors"
-                          >
-                            {stock40x1}
-                          </button>
-                        )}
+                        </div>
                       </div>
                     )
                   })}
@@ -1030,16 +1188,6 @@ export function DashboardPage({
             )}
 
           </aside>
-
-          <Convert40x1Dialog
-            open={convertDialogOpen}
-            onClose={() => setConvertDialogOpen(false)}
-            products={inventoryDisplayProducts.filter(p => !SPREAD_PRODUCT_IDS.has(p.id))}
-            stock={localInventory40x1}
-            amounts={convertAmounts}
-            onAmountsChange={setConvertAmounts}
-            onConvert={handleBatchConvert40x1}
-          />
 
           {/* ── Center: Orders ── */}
           <div className="flex-1 flex flex-col overflow-hidden bg-canvas">
@@ -1092,7 +1240,7 @@ export function DashboardPage({
             >
               {activeTab === 'orders' && (
                 <div className="max-w-2xl mx-auto px-4 py-4 space-y-5">
-                  {unassigned.length === 0 && (
+                  {unassigned.length === 0 && todayFulfilled.length === 0 && (
                     <div className="flex flex-col items-center justify-center h-32 text-stone-300">
                       <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" className="mb-2">
                         <path d="M20 6L9 17l-5-5" />
@@ -1101,13 +1249,33 @@ export function DashboardPage({
                     </div>
                   )}
 
+                  {/* Fulfilled Today */}
+                  {todayFulfilled.length > 0 && (
+                    <div>
+                      <div className="flex items-center gap-2.5 mb-3">
+                        <div className="flex-1 h-0.5 bg-emerald-200 rounded-full" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-emerald-600 font-sans">Fulfilled Today</p>
+                        <div className="flex-1 h-0.5 bg-emerald-200 rounded-full" />
+                      </div>
+                      <div className="space-y-2">
+                        {todayFulfilled.map(order => {
+                          const orderDeliveries = localAllDeliveries.filter(d => d.order_id === order.id).map(d => ({
+                            truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
+                            date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
+                          }))
+                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} fulfilled onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} onDelete={() => handleDeleteOrder(order.id)} />
+                        })}
+                      </div>
+                    </div>
+                  )}
+
                   {/* Overdue */}
                   {sortedUnassigned.overdue.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className="flex-1 h-px bg-red-100" />
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-red-500 font-sans">Overdue</p>
-                        <div className="flex-1 h-px bg-red-100" />
+                      <div className="flex items-center gap-2.5 mb-3">
+                        <div className="flex-1 h-0.5 bg-red-200 rounded-full" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-red-500 font-sans">Overdue</p>
+                        <div className="flex-1 h-0.5 bg-red-200 rounded-full" />
                       </div>
                       <div className="space-y-2">
                         {sortedUnassigned.overdue.map(order => {
@@ -1121,36 +1289,16 @@ export function DashboardPage({
                     </div>
                   )}
 
-                  {/* Due today — exact */}
-                  {sortedUnassigned.todayExact.length > 0 && (
+                  {/* Due Today — exact + range merged */}
+                  {(sortedUnassigned.todayExact.length > 0 || sortedUnassigned.todayRange.length > 0) && (
                     <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className="flex-1 h-px bg-stone-200" />
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans">Due Today</p>
-                        <div className="flex-1 h-px bg-stone-200" />
+                      <div className="flex items-center gap-2.5 mb-3">
+                        <div className="flex-1 h-0.5 bg-stone-300 rounded-full" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-stone-500 font-sans">Due Today</p>
+                        <div className="flex-1 h-0.5 bg-stone-300 rounded-full" />
                       </div>
                       <div className="space-y-2">
-                        {sortedUnassigned.todayExact.map(order => {
-                          const orderDeliveries = localAllDeliveries.filter(d => d.order_id === order.id).map(d => ({
-                            truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
-                            date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
-                          }))
-                          return <OrderCard key={order.id} order={order} customer={customerById.get(order.customer_id) ?? null} items={orderItemsByOrder[order.id] ?? []} remaining={orderRemainingMap.get(order.id) ?? null} productById={productById} date={date} deliveries={orderDeliveries} products={products} onUpdateItem={(pid, cs) => handleUpdateSingleOrderItem(order.id, pid, cs)} onToggleEmpako={(pid, emp) => handleToggleOrderItemEmpako(order.id, pid, emp)} onGoToTruck={setSelectedTruckId} onPartialClick={() => setPartialDialog({ open: true, orderId: order.id, truckId: selectedTruckId })} onAddToTruck={selectedTruckId ? () => assignOrderToTruck(order.id, selectedTruckId) : null} empakaNote={empakaByOrder[order.id] ?? ''} onEmpakaChange={text => handleEmpakaChange(order.id, text)} onDelete={() => handleDeleteOrder(order.id)} />
-                        })}
-                      </div>
-                    </div>
-                  )}
-
-                  {/* Due today — range includes today */}
-                  {sortedUnassigned.todayRange.length > 0 && (
-                    <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className="flex-1 h-px bg-stone-200" />
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans">In Range Today</p>
-                        <div className="flex-1 h-px bg-stone-200" />
-                      </div>
-                      <div className="space-y-2">
-                        {sortedUnassigned.todayRange.map(order => {
+                        {[...sortedUnassigned.todayExact, ...sortedUnassigned.todayRange].map(order => {
                           const orderDeliveries = localAllDeliveries.filter(d => d.order_id === order.id).map(d => ({
                             truckId: d.truck_id, truckName: truckById.get(d.truck_id)?.name ?? `Truck #${d.truck_id}`,
                             date: d.delivery_date, cases: localAllDeliveryItems.filter(di => di.delivery_id === d.id).reduce((s, di) => s + di.cases, 0),
@@ -1164,10 +1312,10 @@ export function DashboardPage({
                   {/* Future */}
                   {sortedUnassigned.future.length > 0 && (
                     <div>
-                      <div className="flex items-center gap-3 mb-2">
-                        <div className="flex-1 h-px bg-stone-200" />
-                        <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans">Upcoming</p>
-                        <div className="flex-1 h-px bg-stone-200" />
+                      <div className="flex items-center gap-2.5 mb-3">
+                        <div className="flex-1 h-0.5 bg-stone-300 rounded-full" />
+                        <p className="text-[10px] font-bold uppercase tracking-widest text-stone-500 font-sans">Future</p>
+                        <div className="flex-1 h-0.5 bg-stone-300 rounded-full" />
                       </div>
                       <div className="space-y-2">
                         {sortedUnassigned.future.map(order => {
@@ -1224,7 +1372,17 @@ export function DashboardPage({
 
                 {warehouseOpen && (
                   <div className="px-5 pb-4 border-t border-stone-100">
-                    <table className="w-full text-xs font-sans mt-3">
+                    {/* Bodega orders button */}
+                    <div className="mt-3 mb-3">
+                      <button
+                        onClick={() => setBodegaDialogOpen(true)}
+                        className="text-xs font-sans font-medium text-stone-500 hover:text-stone-800 border border-stone-200 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition-colors w-full text-left"
+                      >
+                        Bodega Orders{bodegas.length > 0 ? ` (${bodegas.length})` : ''}
+                      </button>
+                    </div>
+                    {/* Warehouse summary stats */}
+                    <table className="w-full text-xs font-sans">
                       <thead>
                         <tr className="border-b border-stone-100">
                           <th className="pb-2 text-left text-stone-400 font-medium">Product</th>
@@ -1237,28 +1395,15 @@ export function DashboardPage({
                       <tbody>
                         {products.map(p => {
                           const w = localWarehouse[p.id] ?? { pickup: 0, stock: 0 }
+                          const pickup = bodegaPickup[p.id] ?? 0
                           const dropped = dropsByProduct[p.id] ?? 0
-                          const stillNeeded = Math.max(0, w.pickup - w.stock - dropped)
-                          const editingPickup = editingWarehouseCell?.productId === p.id && editingWarehouseCell.field === 'pickup'
-                          const editingStock  = editingWarehouseCell?.productId === p.id && editingWarehouseCell.field === 'stock'
+                          const stillNeeded = Math.max(0, pickup - w.stock - dropped)
+                          const editingStock = editingWarehouseCell?.productId === p.id && editingWarehouseCell.field === 'stock'
                           return (
                             <tr key={p.id} className="border-b border-stone-50 last:border-0">
                               <td className="py-1.5 text-stone-700">{p.name}</td>
-                              <td className="py-1.5 text-right font-mono tabular-nums">
-                                {editingPickup ? (
-                                  <input
-                                    type="number" min={0} value={editWarehouseValue} autoFocus
-                                    onChange={e => { setEditWarehouseValue(e.target.value); handleWarehouseEdit(p.id, 'pickup', e.target.value) }}
-                                    onBlur={() => setEditingWarehouseCell(null)}
-                                    onKeyDown={e => { if (e.key === 'Enter' || e.key === 'Escape') setEditingWarehouseCell(null) }}
-                                    className="w-14 text-xs font-mono text-right bg-stone-100 rounded px-1 py-0.5 focus:outline-none focus:ring-1 focus:ring-stone-400 [appearance:textfield]"
-                                  />
-                                ) : (
-                                  <button
-                                    onClick={() => { setEditingWarehouseCell({ productId: p.id, field: 'pickup' }); setEditWarehouseValue(String(w.pickup)) }}
-                                    className="text-stone-500 hover:text-stone-800 hover:underline transition-colors"
-                                  >{w.pickup}</button>
-                                )}
+                              <td className="py-1.5 text-right font-mono tabular-nums text-stone-500">
+                                {pickup > 0 ? pickup : '—'}
                               </td>
                               <td className="py-1.5 text-right font-mono tabular-nums text-stone-600">
                                 {editingStock ? (
@@ -1287,69 +1432,125 @@ export function DashboardPage({
                         })}
                       </tbody>
                     </table>
+
                   </div>
                 )}
               </div>
             )}
           </div>
 
-          {/* ── Right: Truck assignment panel ── */}
+          {/* ── Right: Truck assignment / summary panel ── */}
           <aside className="flex-1 bg-white border-l border-stone-200 flex flex-col overflow-hidden">
             {/* Header */}
-            <div className="flex-shrink-0 px-5 py-3 border-b border-stone-200/60">
+            <div className="flex-shrink-0 px-5 py-3 border-b border-stone-200/60 flex items-center justify-between">
               <h1 className="font-display text-lg font-semibold text-stone-800 tracking-tight">Trucks</h1>
-            </div>
-            {/* Truck tabs */}
-            <div className="flex-shrink-0 flex bg-stone-50 border-b border-stone-200 overflow-x-auto">
-              {trucks.map(t => {
-                const load = truckLoads[t.id] ?? 0
-                const pct = t.capacity_cases > 0 ? load / t.capacity_cases : 0
-                const dot = load === 0 ? null : pct > 1 ? 'red' : pct >= 0.7 ? 'green' : 'yellow'
-                return (
-                  <button
-                    key={t.id}
-                    onClick={() => setSelectedTruckId(t.id)}
-                    className={cn(
-                      'px-4 py-2.5 text-sm font-sans font-medium whitespace-nowrap border-b-2 transition-colors flex-shrink-0 flex items-center gap-1.5',
-                      selectedTruckId === t.id
-                        ? 'bg-white text-stone-800 border-stone-700'
-                        : 'text-stone-400 border-transparent hover:text-stone-600 hover:bg-white/60',
-                    )}
-                  >
-                    {dot && (
-                      <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dot === 'red' ? 'bg-red-400' : dot === 'green' ? 'bg-emerald-400' : 'bg-amber-400')} />
-                    )}
-                    {t.name}
-                  </button>
-                )
-              })}
-              {trucks.length === 0 && (
-                <p className="px-4 py-2.5 text-sm text-stone-300 font-sans">No trucks available</p>
-              )}
+              <div className="flex bg-stone-100 rounded-lg p-0.5">
+                <button
+                  onClick={() => setShowSummary(false)}
+                  className={cn(
+                    'px-2.5 py-1 rounded-md text-xs font-sans font-medium transition-colors',
+                    !showSummary ? 'bg-white shadow-sm text-stone-800' : 'text-stone-500 hover:text-stone-700',
+                  )}
+                >
+                  Assign
+                </button>
+                <button
+                  onClick={() => setShowSummary(true)}
+                  className={cn(
+                    'px-2.5 py-1 rounded-md text-xs font-sans font-medium transition-colors',
+                    showSummary ? 'bg-white shadow-sm text-stone-800' : 'text-stone-500 hover:text-stone-700',
+                  )}
+                >
+                  Summary
+                </button>
+              </div>
             </div>
 
-            {selectedTruck ? (
-              <TruckPanel
-                truck={selectedTruck}
-                stops={stops.get(selectedTruck.id) ?? []}
-                load={truckLoads[selectedTruck.id] ?? 0}
-                orderById={orderById}
-                customerById={customerById}
-                productById={productById}
-                products={products}
-                orderItemsByOrder={orderItemsByOrder}
-                empakaByOrder={empakaByOrder}
-                onEmpakaChange={handleEmpakaChange}
-                onRemoveStop={(deliveryId) => handleRemoveStop(selectedTruck.id, deliveryId)}
-                onUpdateDeliveryItems={(deliveryId, items) => handleUpdateDeliveryItems(deliveryId, selectedTruck.id, items)}
-                onUpdateOrderItems={handleUpdateSingleOrderItem}
-                onToggleEmpako={handleToggleOrderItemEmpako}
-                onDropClick={() => setWarehouseDropDialog({ open: true, truckId: selectedTruck.id })}
-              />
-            ) : (
-              <div className="flex-1 flex items-center justify-center">
-                <p className="text-stone-300 text-sm font-sans">Select a truck</p>
+            {showSummary ? (
+              <div className="flex-1 overflow-y-auto p-3 space-y-3">
+                {summaryData.length === 0 ? (
+                  <p className="text-center py-10 text-stone-400 text-sm font-sans">No deliveries for this date.</p>
+                ) : (
+                  summaryData.map(({ truck, deliveries: fakeDels, itemsByDelivery: fakeItems, drops }) => (
+                    <TruckSummary
+                      key={truck.id}
+                      truck={truck}
+                      deliveries={fakeDels}
+                      itemsByDelivery={fakeItems}
+                      drops={drops}
+                      products={products}
+                      orderById={orderById}
+                      customerById={customerById}
+                      orderItemsByOrderId={orderItemsByOrder}
+                      note={truckNotes[truck.id] ?? ''}
+                      expanded={summaryExpanded.has(truck.id)}
+                      onToggle={() => setSummaryExpanded(prev => {
+                        const next = new Set(prev)
+                        if (next.has(truck.id)) next.delete(truck.id)
+                        else next.add(truck.id)
+                        return next
+                      })}
+                    />
+                  ))
+                )}
               </div>
+            ) : (
+              <>
+                {/* Truck tabs */}
+                <div className="flex-shrink-0 flex bg-stone-50 border-b border-stone-200 overflow-x-auto">
+                  {trucks.map(t => {
+                    const load = truckLoads[t.id] ?? 0
+                    const pct = t.capacity_cases > 0 ? load / t.capacity_cases : 0
+                    const dot = load === 0 ? null : pct > 1 ? 'red' : pct >= 0.7 ? 'green' : 'yellow'
+                    return (
+                      <button
+                        key={t.id}
+                        onClick={() => setSelectedTruckId(t.id)}
+                        className={cn(
+                          'px-4 py-2.5 text-sm font-sans font-medium whitespace-nowrap border-b-2 transition-colors flex-shrink-0 flex items-center gap-1.5',
+                          selectedTruckId === t.id
+                            ? 'bg-white text-stone-800 border-stone-700'
+                            : 'text-stone-400 border-transparent hover:text-stone-600 hover:bg-white/60',
+                        )}
+                      >
+                        {dot && (
+                          <span className={cn('w-1.5 h-1.5 rounded-full flex-shrink-0', dot === 'red' ? 'bg-red-400' : dot === 'green' ? 'bg-emerald-400' : 'bg-amber-400')} />
+                        )}
+                        {t.name}
+                      </button>
+                    )
+                  })}
+                  {trucks.length === 0 && (
+                    <p className="px-4 py-2.5 text-sm text-stone-300 font-sans">No trucks available</p>
+                  )}
+                </div>
+
+                {selectedTruck ? (
+                  <TruckPanel
+                    truck={selectedTruck}
+                    stops={stops.get(selectedTruck.id) ?? []}
+                    load={truckLoads[selectedTruck.id] ?? 0}
+                    orderById={orderById}
+                    customerById={customerById}
+                    productById={productById}
+                    products={products}
+                    orderItemsByOrder={orderItemsByOrder}
+                    empakaByOrder={empakaByOrder}
+                    note={truckNotes[selectedTruck.id] ?? ''}
+                    onNoteChange={(n) => handleTruckNoteChange(selectedTruck.id, n)}
+                    onEmpakaChange={handleEmpakaChange}
+                    onRemoveStop={(deliveryId) => handleRemoveStop(selectedTruck.id, deliveryId)}
+                    onUpdateDeliveryItems={(deliveryId, items) => handleUpdateDeliveryItems(deliveryId, selectedTruck.id, items)}
+                    onUpdateOrderItems={handleUpdateSingleOrderItem}
+                    onToggleEmpako={handleToggleOrderItemEmpako}
+                    onDropClick={() => setWarehouseDropDialog({ open: true, truckId: selectedTruck.id })}
+                  />
+                ) : (
+                  <div className="flex-1 flex items-center justify-center">
+                    <p className="text-stone-300 text-sm font-sans">Select a truck</p>
+                  </div>
+                )}
+              </>
             )}
           </aside>
 
@@ -1379,6 +1580,7 @@ export function DashboardPage({
         orderRemainingMap={orderRemainingMap}
         orderItemsByOrder={orderItemsByOrder}
         remainingInventory={remainingInventory}
+        remaining40x1={remaining40x1}
         truckLoads={truckLoads}
         truckProductTotals={truckProductTotals}
         onSubmit={assignPartialDelivery}
@@ -1407,6 +1609,36 @@ export function DashboardPage({
         date={date}
         onCreated={handleOrderCreated}
       />
+
+      {/* Bodega orders popup */}
+      {bodegaDialogOpen && (
+        <>
+          <div className="fixed inset-0 bg-black/30 z-50" onClick={() => setBodegaDialogOpen(false)} />
+          <div className="fixed inset-4 z-[51] flex flex-col bg-white rounded-xl shadow-2xl overflow-hidden">
+            <div className="flex items-center justify-between px-6 py-4 border-b border-stone-100 shrink-0">
+              <span className="font-display text-base font-semibold text-stone-800">Bodega Orders</span>
+              <button
+                onClick={() => setBodegaDialogOpen(false)}
+                className="p-1.5 rounded-lg hover:bg-stone-100 text-stone-400 hover:text-stone-700 transition-colors text-sm font-sans"
+              >
+                ✕
+              </button>
+            </div>
+            <div className="flex-1 overflow-auto p-6">
+              {bodegas.length === 0 ? (
+                <p className="text-sm text-stone-400 font-sans py-4 text-center">No bodega orders for this date.</p>
+              ) : (
+                <BodegaTable
+                  products={products}
+                  bodegas={bodegas}
+                  editable={true}
+                  onCellChange={handleBodegaChange}
+                />
+              )}
+            </div>
+          </div>
+        </>
+      )}
     </>
   )
 }
@@ -1578,7 +1810,7 @@ function EditOrderDialog({
 
 function OrderCard({
   order, customer, items, remaining, productById, products, date,
-  deliveries, onUpdateItem, onToggleEmpako, onGoToTruck, onPartialClick, onAddToTruck,
+  deliveries, fulfilled, onUpdateItem, onToggleEmpako, onGoToTruck, onPartialClick, onAddToTruck,
   empakaNote, onEmpakaChange, onDelete,
 }: {
   order: Order
@@ -1589,6 +1821,7 @@ function OrderCard({
   products: DeliveryProduct[]
   date: string
   deliveries: { truckId: number; truckName: string; date: string; cases: number }[]
+  fulfilled?: boolean
   onUpdateItem: (productId: string, cases: number) => Promise<void>
   onToggleEmpako: (productId: string, empako: boolean) => Promise<void>
   onGoToTruck: (truckId: number) => void
@@ -1613,20 +1846,32 @@ function OrderCard({
   const sortedItems = [...items].sort(
     (a, b) => (productById.get(a.product_id)?.display_order ?? 999) - (productById.get(b.product_id)?.display_order ?? 999),
   )
+  const itemMap: Record<string, OrderItem> = {}
+  for (const i of sortedItems) itemMap[i.product_id] = i
+  const tableProds = [...products]
+    .sort((a, b) => a.display_order - b.display_order)
+    .filter(p => !CONDITIONAL_SHOW_PRODUCT_IDS.has(p.id) || (itemMap[p.id]?.cases ?? 0) > 0)
 
   function fmtDate(d: string) {
     return new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
   }
 
   return (
-    <div className="bg-white rounded-xl border border-stone-100 shadow-sm overflow-hidden">
+    <div className={cn('rounded-xl border shadow-sm overflow-hidden', fulfilled ? 'bg-emerald-50/60 border-emerald-100' : 'bg-white border-stone-100')}>
       {/* ── Header ── */}
       <div className="flex items-start justify-between gap-2 px-3 pt-2.5 pb-2">
-        <div className="min-w-0">
-          <span className="text-sm font-sans font-semibold text-stone-800 truncate block">
-            {customer?.name ?? `Customer #${order.customer_id}`}
-          </span>
-          <p className="text-[11px] font-sans text-stone-400 mt-0.5">{dueLine}</p>
+        <div className="min-w-0 flex items-start gap-1.5">
+          {fulfilled && (
+            <svg width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round" strokeLinejoin="round" className="text-emerald-500 flex-shrink-0 mt-0.5">
+              <path d="M20 6L9 17l-5-5" />
+            </svg>
+          )}
+          <div className="min-w-0">
+            <span className="text-sm font-sans font-semibold text-stone-800 truncate block">
+              {customer?.name ?? `Customer #${order.customer_id}`}
+            </span>
+            <p className="text-[11px] font-sans text-stone-400 mt-0.5">{dueLine}</p>
+          </div>
         </div>
         <div className="flex items-center gap-1 flex-shrink-0 mt-0.5">
           {onAddToTruck && (
@@ -1643,12 +1888,14 @@ function OrderCard({
           >
             Edit
           </button>
-          <button
-            onClick={onPartialClick}
-            className="px-2 py-0.5 text-[11px] font-semibold font-sans rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors"
-          >
-            Partial
-          </button>
+          {!fulfilled && (
+            <button
+              onClick={onPartialClick}
+              className="px-2 py-0.5 text-[11px] font-semibold font-sans rounded-md bg-amber-50 text-amber-700 hover:bg-amber-100 transition-colors"
+            >
+              Partial
+            </button>
+          )}
         </div>
       </div>
 
@@ -1665,73 +1912,71 @@ function OrderCard({
       )}
 
       {/* ── Product table ── */}
-      {sortedItems.length > 0 ? (
-        <div className="border-t border-stone-100 overflow-x-auto">
-          <table className="text-xs font-sans">
-            <thead>
-              <tr className="border-b border-stone-100 bg-stone-50/70">
-                <th className="px-3 py-1.5 text-left font-medium text-stone-300 whitespace-nowrap w-10" />
-                {sortedItems.map(item => (
-                  <th key={item.product_id} className="px-2 py-1.5 text-left font-medium text-stone-400 whitespace-nowrap pr-4 last:pr-2">
-                    {getProductAbbr({ id: item.product_id, name: productById.get(item.product_id)?.name ?? item.product_id })}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {/* Ordered row */}
-              <tr className={cn(isPartial && 'border-b border-stone-50')}>
-                <td className="px-3 py-1.5 text-stone-400 font-medium whitespace-nowrap text-[10px] uppercase tracking-wide">Ord</td>
-                {sortedItems.map(item => (
-                  <td key={item.product_id} className="px-2 py-1.5 text-left font-mono tabular-nums text-stone-600 pr-4 last:pr-2">
-                    {item.cases}
-                    {item.empako && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
+      <div className="border-t border-stone-100 overflow-x-auto">
+        <table className="text-xs font-sans w-full">
+          <thead>
+            <tr className={cn('border-b', fulfilled ? 'bg-emerald-50/70 border-emerald-100' : 'bg-stone-50/70 border-stone-100')}>
+              {tableProds.map(p => (
+                <th key={p.id} className="px-2 py-1.5 text-center font-medium text-stone-400 whitespace-nowrap">
+                  {getProductAbbr(p)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {/* Ordered row */}
+            <tr className={cn(isPartial && 'border-b border-stone-50')}>
+              {tableProds.map(p => {
+                const item = itemMap[p.id]
+                const val = item?.cases ?? 0
+                return (
+                  <td key={p.id} className={cn('px-2 py-1.5 text-center font-mono tabular-nums', val > 0 ? 'font-bold text-stone-700' : 'text-stone-300')}>
+                    {val}
+                    {item?.empako && val > 0 && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
                   </td>
-                ))}
+                )
+              })}
+            </tr>
+            {/* Delivered row — only when partially delivered */}
+            {isPartial && (
+              <tr className="border-b border-stone-50">
+                {tableProds.map(p => {
+                  const dlv = remaining?.byItem[p.id]?.delivered ?? 0
+                  const item = itemMap[p.id]
+                  return (
+                    <td key={p.id} className={cn('px-2 py-1.5 text-center font-mono tabular-nums', dlv > 0 ? 'font-bold text-emerald-600' : 'text-stone-300')}>
+                      {dlv}
+                      {item?.empako && dlv > 0 && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
+                    </td>
+                  )
+                })}
               </tr>
-              {/* Delivered row — only when partially delivered */}
-              {isPartial && (
-                <tr className="border-b border-stone-50">
-                  <td className="px-3 py-1.5 text-emerald-600 font-medium whitespace-nowrap text-[10px] uppercase tracking-wide">Dlv</td>
-                  {sortedItems.map(item => {
-                    const dlv = remaining?.byItem[item.product_id]?.delivered ?? 0
-                    return (
-                      <td key={item.product_id} className={cn('px-2 py-1.5 text-left font-mono tabular-nums font-semibold pr-4 last:pr-2', dlv === 0 ? 'text-stone-200' : 'text-emerald-600')}>
-                        {dlv}
-                        {item.empako && dlv > 0 && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
-                      </td>
-                    )
-                  })}
-                </tr>
-              )}
-              {/* Needed row — only when partially delivered */}
-              {isPartial && (
-                <tr>
-                  <td className="px-3 py-1.5 text-amber-600 font-medium whitespace-nowrap text-[10px] uppercase tracking-wide">Need</td>
-                  {sortedItems.map(item => {
-                    const need = remaining?.byItem[item.product_id]?.remaining ?? item.cases
-                    return (
-                      <td key={item.product_id} className={cn('px-2 py-1.5 text-left font-mono tabular-nums font-semibold pr-4 last:pr-2', need === 0 ? 'text-stone-200' : 'text-amber-600')}>
-                        {need}
-                        {item.empako && need > 0 && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
-                      </td>
-                    )
-                  })}
-                </tr>
-              )}
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="px-3 pb-2 text-xs text-stone-300 font-sans">No items</p>
-      )}
+            )}
+            {/* Needed row — only when partially delivered */}
+            {isPartial && (
+              <tr>
+                {tableProds.map(p => {
+                  const need = remaining?.byItem[p.id]?.remaining ?? (itemMap[p.id]?.cases ?? 0)
+                  const item = itemMap[p.id]
+                  return (
+                    <td key={p.id} className={cn('px-2 py-1.5 text-center font-mono tabular-nums', need > 0 ? 'font-bold text-amber-600' : 'text-stone-300')}>
+                      {need}
+                      {item?.empako && need > 0 && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
+                    </td>
+                  )
+                })}
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
 
       {/* Notes */}
       {order.notes && (
         <p className="px-3 pt-1 pb-1 text-xs font-sans text-stone-400 italic border-t border-stone-50">{order.notes}</p>
       )}
 
-      {/* Past deliveries — toggle button + inline expand below */}
+      {/* Deliveries — toggle button + inline expand below */}
       {hasDeliveries && (
         <div className="border-t border-stone-100">
           <button
@@ -1744,7 +1989,7 @@ function OrderCard({
             >
               <path d="M9 18l6-6-6-6" />
             </svg>
-            Past Deliveries
+            Deliveries
           </button>
           {showDeliveries && (
             <div className="px-3 pb-2 space-y-0.5 border-t border-stone-50">
@@ -1784,103 +2029,16 @@ function OrderCard({
   )
 }
 
-// ── Convert40x1Dialog ─────────────────────────────────────────────────────────
-
-function Convert40x1Dialog({
-  open, onClose, products, stock, amounts, onAmountsChange, onConvert,
-}: {
-  open: boolean
-  onClose: () => void
-  products: DeliveryProduct[]
-  stock: Record<string, number>
-  amounts: Record<string, string>
-  onAmountsChange: (a: Record<string, string>) => void
-  onConvert: (amounts: Record<string, string>) => Promise<void>
-}) {
-  const [saving, setSaving] = useState(false)
-
-  async function handleSubmit() {
-    setSaving(true)
-    await onConvert(amounts)
-    setSaving(false)
-  }
-
-  const hasAny = products.some(p => (parseInt(amounts[p.id] ?? '0') || 0) > 0)
-
-  return (
-    <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
-      <DialogContent className="max-w-sm">
-        <DialogHeader>
-          <DialogTitle>Convert 40x1 → 20x1</DialogTitle>
-        </DialogHeader>
-        <div className="border border-stone-100 rounded-xl overflow-hidden">
-          <div className="grid grid-cols-[1fr_64px_auto] px-4 py-2 bg-stone-50 border-b border-stone-100 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans gap-2">
-            <span>Product</span>
-            <span className="text-right">In stock</span>
-            <span className="text-right">Convert</span>
-          </div>
-          {products.map(p => {
-            const available = stock[p.id] ?? 0
-            const val = amounts[p.id] ?? ''
-            const n = parseInt(val) || 0
-            const over = n > available
-            return (
-              <div key={p.id} className="grid grid-cols-[1fr_64px_auto] items-center px-4 py-2.5 border-b border-stone-50 last:border-0 gap-2">
-                <span className="text-sm font-sans text-stone-700">{getProductAbbr(p)}</span>
-                <span className="text-sm font-mono text-stone-400 text-right tabular-nums">{available}</span>
-                <div className="flex items-center gap-1">
-                  <input
-                    type="number" min={0} max={available} value={val}
-                    onChange={e => onAmountsChange({ ...amounts, [p.id]: e.target.value })}
-                    onFocus={e => e.target.select()}
-                    placeholder="0"
-                    className={cn(
-                      'w-14 px-2 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 [appearance:textfield]',
-                      over ? 'border-red-300 focus:ring-red-300' : 'border-stone-200 focus:ring-stone-300',
-                    )}
-                  />
-                  <button
-                    onClick={() => onAmountsChange({ ...amounts, [p.id]: String(available) })}
-                    title="Convert all in stock"
-                    className="flex-shrink-0 w-5 h-5 flex items-center justify-center rounded text-stone-300 hover:text-orange-500 hover:bg-orange-50 transition-colors"
-                  >
-                    <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5" strokeLinecap="round">
-                      <path d="M5 12h14M12 5l7 7-7 7" />
-                    </svg>
-                  </button>
-                </div>
-              </div>
-            )
-          })}
-        </div>
-        <DialogFooter>
-          <button
-            onClick={onClose}
-            className="px-4 py-2 text-sm font-sans font-medium text-stone-500 hover:text-stone-700 transition-colors"
-          >
-            Cancel
-          </button>
-          <button
-            onClick={handleSubmit} disabled={saving || !hasAny}
-            className="px-5 py-2 text-sm font-semibold font-sans rounded-xl bg-orange-500 text-white hover:bg-orange-600 disabled:opacity-40 transition-colors"
-          >
-            {saving ? 'Converting…' : 'Convert'}
-          </button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  )
-}
-
 // ── TruckCapacityBar (shared between panel and dialogs) ───────────────────────
 
 function TruckCapacityBar({
-  truck, load, productTotals, productById, actions, stops, orderById, customerById, orderItemsByOrder,
+  truck, load, productTotals, productById, products, actions, stops, orderById, customerById, orderItemsByOrder,
 }: {
   truck: Truck
   load: number
   productTotals: Record<string, number>
   productById: Map<string, DeliveryProduct>
+  products?: DeliveryProduct[]
   actions?: React.ReactNode
   stops?: TruckStop[]
   orderById?: Map<number, Order>
@@ -1897,13 +2055,11 @@ function TruckCapacityBar({
 
     const sortedStops = [...stops].sort((a, b) => a.stopOrder - b.stopOrder)
 
-    const pidSet = new Set(sortedStops.flatMap(s => s.items.map(i => i.productId)))
-    const activeProducts = [...pidSet]
-      .map(id => productById.get(id))
-      .filter((p): p is DeliveryProduct => p != null)
+    const visibleProducts = (products ?? [])
+      .filter(p => !CONDITIONAL_SHOW_PRODUCT_IDS.has(p.id) || (productTotals[p.id] ?? 0) > 0)
       .sort((a, b) => a.display_order - b.display_order)
 
-    if (activeProducts.length === 0) return null
+    if (visibleProducts.length === 0) return null
 
     type StopData = {
       stop: TruckStop
@@ -1956,11 +2112,11 @@ function TruckCapacityBar({
 
     return (
       <div className="mt-2 border border-stone-100 rounded-lg overflow-x-auto">
-        <table className="w-full text-xs font-sans">
+        <table className="w-full text-xs font-sans [&_td]:align-middle [&_th]:align-middle">
           <thead>
             <tr className="bg-stone-50 border-b border-stone-200">
               <th className="text-left px-3 py-1.5 font-medium text-stone-400 whitespace-nowrap w-40">Client</th>
-              {activeProducts.map(p => (
+              {visibleProducts.map(p => (
                 <th key={p.id} className="px-2 py-1.5 font-medium text-stone-400 text-right whitespace-nowrap">{getProductAbbr(p)}</th>
               ))}
             </tr>
@@ -1968,7 +2124,7 @@ function TruckCapacityBar({
           <tbody>
             {hasEmpako && (
               <tr className="bg-stone-50 border-b border-stone-200">
-                <td colSpan={1 + activeProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                <td colSpan={1 + visibleProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                   20×1
                 </td>
               </tr>
@@ -1976,9 +2132,9 @@ function TruckCapacityBar({
             {topRows.map(r => (
               <tr key={r.stop.deliveryId} className="hover:bg-stone-50 border-b border-stone-100">
                 <td className="px-3 py-1.5 text-stone-600 whitespace-nowrap w-40">
-                  <span className="text-stone-300 mr-1">{r.idx + 1}.</span>{r.label}
+                  {r.label}
                 </td>
-                {activeProducts.map(p => {
+                {visibleProducts.map(p => {
                   const val = r.isWh ? r.itemMap[p.id] : (!r.empakoMap[p.id] ? r.itemMap[p.id] : undefined)
                   return (
                     <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums text-stone-700">
@@ -1989,8 +2145,8 @@ function TruckCapacityBar({
               </tr>
             ))}
             <tr className={cn('bg-stone-100 border-b border-stone-200', !hasEmpako && 'border-b-0')}>
-              <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total</td>
-              {activeProducts.map(p => (
+              <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">{hasEmpako ? 'Total (20×1)' : 'Total'}</td>
+              {visibleProducts.map(p => (
                 <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums font-semibold text-stone-700">
                   {topTotals[p.id] ?? 0}
                 </td>
@@ -1999,16 +2155,16 @@ function TruckCapacityBar({
             {hasEmpako && (
               <>
                 <tr className="bg-stone-50 border-b border-stone-200">
-                  <td colSpan={1 + activeProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
+                  <td colSpan={1 + visibleProducts.length} className="px-3 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans text-center">
                     40×1
                   </td>
                 </tr>
                 {bottomRows.map(r => (
                   <tr key={`emp-${r.stop.deliveryId}`} className="hover:bg-stone-50 border-b border-stone-100">
                     <td className="px-3 py-1.5 text-stone-600 whitespace-nowrap w-40">
-                      <span className="text-stone-300 mr-1">{r.idx + 1}.</span>{r.label}
+                      {r.label}
                     </td>
-                    {activeProducts.map(p => {
+                    {visibleProducts.map(p => {
                       const val = r.empakoMap[p.id] ? r.itemMap[p.id] : undefined
                       return (
                         <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums text-stone-700">
@@ -2019,8 +2175,8 @@ function TruckCapacityBar({
                   </tr>
                 ))}
                 <tr className="bg-stone-100">
-                  <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total</td>
-                  {activeProducts.map(p => (
+                  <td className="px-3 py-1.5 font-semibold text-stone-600 w-40">Total (40×1)</td>
+                  {visibleProducts.map(p => (
                     <td key={p.id} className="px-2 py-1.5 text-right font-mono tabular-nums font-semibold text-stone-700">
                       {bottomTotals[p.id] ?? 0}
                     </td>
@@ -2032,7 +2188,7 @@ function TruckCapacityBar({
         </table>
       </div>
     )
-  }, [stops, orderById, customerById, productById, orderItemsByOrder, load])
+  }, [stops, orderById, customerById, productById, products, productTotals, orderItemsByOrder])
 
   return (
     <div>
@@ -2160,7 +2316,7 @@ function WarehouseDropCard({
 
 // ── TruckPanel ────────────────────────────────────────────────────────────────
 
-function TruckPanel({ truck, stops, load, orderById, customerById, productById, products, orderItemsByOrder, empakaByOrder, onEmpakaChange, onRemoveStop, onUpdateDeliveryItems, onUpdateOrderItems, onToggleEmpako, onDropClick }: {
+function TruckPanel({ truck, stops, load, orderById, customerById, productById, products, orderItemsByOrder, empakaByOrder, note, onNoteChange, onEmpakaChange, onRemoveStop, onUpdateDeliveryItems, onUpdateOrderItems, onToggleEmpako, onDropClick }: {
   truck: Truck
   stops: TruckStop[]
   load: number
@@ -2170,6 +2326,8 @@ function TruckPanel({ truck, stops, load, orderById, customerById, productById, 
   products: DeliveryProduct[]
   orderItemsByOrder: Record<number, OrderItem[]>
   empakaByOrder: Record<number, string>
+  note: string
+  onNoteChange: (note: string) => void
   onEmpakaChange: (orderId: number, text: string) => void
   onRemoveStop: (deliveryId: number) => void
   onUpdateDeliveryItems: (deliveryId: number, items: { productId: string; cases: number }[]) => Promise<void>
@@ -2177,7 +2335,6 @@ function TruckPanel({ truck, stops, load, orderById, customerById, productById, 
   onToggleEmpako: (orderId: number, productId: string, empako: boolean) => Promise<void>
   onDropClick: () => void
 }) {
-
   const { setNodeRef, isOver } = useDroppable({
     id: `truck-${truck.id}`,
     data: { type: 'truck', truckId: truck.id },
@@ -2198,17 +2355,30 @@ function TruckPanel({ truck, stops, load, orderById, customerById, productById, 
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       {/* Capacity section */}
-      <div className="flex-shrink-0 border-b border-stone-100 px-4 pt-3 pb-2">
-        <TruckCapacityBar
-          truck={truck}
-          load={load}
-          productTotals={productTotals}
-          productById={productById}
-          stops={stops}
-          orderById={orderById}
-          customerById={customerById}
-          orderItemsByOrder={orderItemsByOrder}
-        />
+      <div className="flex-shrink-0 border-b border-stone-100">
+        <div className="px-4 pt-3 pb-2">
+          <TruckCapacityBar
+            truck={truck}
+            load={load}
+            productTotals={productTotals}
+            productById={productById}
+            products={products}
+            stops={stops}
+            orderById={orderById}
+            customerById={customerById}
+            orderItemsByOrder={orderItemsByOrder}
+          />
+        </div>
+        <div className="border-t border-stone-50 px-3 py-2">
+          <p className="text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans mb-1.5">Notes</p>
+          <textarea
+            value={note}
+            onChange={e => onNoteChange(e.target.value)}
+            placeholder="Add notes for this truck…"
+            rows={3}
+            className="w-full text-xs font-sans text-stone-700 placeholder-stone-300 border border-stone-100 rounded-lg p-2 resize-none focus:outline-none focus:ring-2 focus:ring-stone-200 bg-stone-50/50"
+          />
+        </div>
       </div>
 
       {/* Stop list */}
@@ -2316,58 +2486,64 @@ function StopEditDialog({
   onSaveDelivery: (items: { productId: string; cases: number }[]) => Promise<void>
   onToggleEmpako: (productId: string, empako: boolean) => Promise<void>
 }) {
-  const [ordAmounts, setOrdAmounts] = useState<Record<string, string>>({})
-  const [dlvAmounts, setDlvAmounts] = useState<Record<string, string>>({})
+  const [amounts, setAmounts] = useState<Record<string, string>>({})
   const [empakoState, setEmpakoState] = useState<Record<string, boolean>>({})
   const [saving, setSaving] = useState(false)
 
+  const orderTotal = useMemo(() => orderItems.reduce((s, i) => s + i.cases, 0), [orderItems])
+  const deliveryTotal = useMemo(() => stop.items.reduce((s, i) => s + i.cases, 0), [stop.items])
+  const isPartial = orderTotal > 0 && deliveryTotal < orderTotal
+
+  const orderMap = useMemo(() => {
+    const m: Record<string, number> = {}
+    for (const i of orderItems) m[i.productId] = i.cases
+    return m
+  }, [orderItems])
+
   useEffect(() => {
     if (open) {
-      const ord: Record<string, string> = {}
-      const dlv: Record<string, string> = {}
+      const vals: Record<string, string> = {}
       const emp: Record<string, boolean> = {}
-      for (const i of orderItems) {
-        ord[i.productId] = String(i.cases)
-        emp[i.productId] = i.empako ?? false
+      if (isPartial) {
+        for (const i of stop.items) vals[i.productId] = String(i.cases)
+      } else {
+        for (const i of orderItems) vals[i.productId] = String(i.cases)
       }
-      for (const i of stop.items) dlv[i.productId] = String(i.cases)
-      setOrdAmounts(ord)
-      setDlvAmounts(dlv)
+      for (const i of orderItems) emp[i.productId] = i.empako ?? false
+      setAmounts(vals)
       setEmpakoState(emp)
     }
   }, [open, orderItems, stop.items])
 
-  function handleOrdChange(productId: string, value: string) {
-    const newOrdN = parseInt(value) || 0
-    setOrdAmounts(prev => ({ ...prev, [productId]: value }))
-    // Cap delivery to ordered — delivery can never exceed ordered amount
-    const currentDlv = parseInt(dlvAmounts[productId] ?? '0') || 0
-    if (currentDlv > newOrdN) {
-      setDlvAmounts(prev => ({ ...prev, [productId]: String(newOrdN) }))
-    }
-  }
-
   async function handleSave() {
     setSaving(true)
-    const promises: Promise<void>[] = []
 
-    for (const p of products) {
-      const newOrd = parseInt(ordAmounts[p.id] ?? '0') || 0
-      const oldOrd = orderItems.find(i => i.productId === p.id)?.cases ?? 0
-      if (newOrd !== oldOrd) promises.push(onSaveOrderItem(p.id, newOrd))
+    if (isPartial) {
+      // Partial: only update this truck's delivery; order total stays unchanged
+      const newDelivery = products
+        .map(p => ({ productId: p.id, cases: parseInt(amounts[p.id] ?? '0') || 0 }))
+        .filter(i => i.cases > 0)
+      await onSaveDelivery(newDelivery)
+    } else {
+      // Full: update order items and keep delivery in sync
+      const promises: Promise<void>[] = []
+      for (const p of products) {
+        const newVal = parseInt(amounts[p.id] ?? '0') || 0
+        const oldVal = orderItems.find(i => i.productId === p.id)?.cases ?? 0
+        if (newVal !== oldVal) promises.push(onSaveOrderItem(p.id, newVal))
 
-      if (!SPREAD_PRODUCT_IDS.has(p.id)) {
-        const newEmpako = empakoState[p.id] ?? false
-        const oldEmpako = orderItems.find(i => i.productId === p.id)?.empako ?? false
-        if (newEmpako !== oldEmpako) promises.push(onToggleEmpako(p.id, newEmpako))
+        if (!SPREAD_PRODUCT_IDS.has(p.id)) {
+          const newEmp = empakoState[p.id] ?? false
+          const oldEmp = orderItems.find(i => i.productId === p.id)?.empako ?? false
+          if (newEmp !== oldEmp) promises.push(onToggleEmpako(p.id, newEmp))
+        }
       }
+      await Promise.all(promises)
+      const newDelivery = products
+        .map(p => ({ productId: p.id, cases: parseInt(amounts[p.id] ?? '0') || 0 }))
+        .filter(i => i.cases > 0)
+      await onSaveDelivery(newDelivery)
     }
-    await Promise.all(promises)
-
-    const newDelivery = products
-      .map(p => ({ productId: p.id, cases: parseInt(dlvAmounts[p.id] ?? '0') || 0 }))
-      .filter(i => i.cases > 0)
-    await onSaveDelivery(newDelivery)
 
     setSaving(false)
     onClose()
@@ -2377,32 +2553,31 @@ function StopEditDialog({
     <Dialog open={open} onOpenChange={v => { if (!v) onClose() }}>
       <DialogContent className="max-w-sm max-h-[90svh] grid-rows-[auto_auto_1fr_auto]">
         <DialogHeader>
-          <DialogTitle>Edit Order</DialogTitle>
+          <DialogTitle>{isPartial ? 'Edit Partial Delivery' : 'Edit Order'}</DialogTitle>
         </DialogHeader>
         <p className="text-xs text-stone-400 font-sans -mt-1">
-          Change <span className="font-medium text-stone-600">Ordered</span> to update the order, or change <span className="font-medium text-stone-600">Deliver</span> to set what goes on this truck. Deliver is capped to Ordered.
+          {isPartial
+            ? <>Editing changes the amount on <span className="font-medium text-stone-600">this truck only</span>. The original order total stays unchanged.</>
+            : <>Editing changes the <span className="font-medium text-stone-600">order amount</span>. The delivery updates automatically.</>}
         </p>
         <div className="min-h-0 overflow-y-auto border border-stone-100 rounded-xl">
-          <div className="grid grid-cols-[1fr_44px_72px_72px] px-4 py-2 bg-stone-50 border-b border-stone-100 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans gap-2">
+          <div className="grid grid-cols-[1fr_44px_80px] px-4 py-2 bg-stone-50 border-b border-stone-100 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans gap-2">
             <span>Product</span>
             <span className="text-center">40x1</span>
-            <span className="text-right">Ordered</span>
-            <span className="text-right">Deliver</span>
+            <span className="text-right">Amount</span>
           </div>
           {products.map(p => {
-            const ordVal = ordAmounts[p.id] ?? '0'
-            const dlvVal = dlvAmounts[p.id] ?? '0'
-            const ordN   = parseInt(ordVal) || 0
-            const dlvN   = parseInt(dlvVal) || 0
-            const isActive    = ordN > 0 || dlvN > 0
-            const isPartialRow = dlvN > 0 && dlvN < ordN
-            const isEmpako    = empakoState[p.id] ?? false
-            const isSpread    = SPREAD_PRODUCT_IDS.has(p.id)
+            const val = amounts[p.id] ?? '0'
+            const n = parseInt(val) || 0
+            const isActive = n > 0
+            const isEmpako = empakoState[p.id] ?? false
+            const isSpread = SPREAD_PRODUCT_IDS.has(p.id)
+            const maxVal = isPartial ? (orderMap[p.id] ?? undefined) : undefined
             return (
               <div
                 key={p.id}
                 className={cn(
-                  'grid grid-cols-[1fr_44px_72px_72px] items-center px-4 py-2 border-b border-stone-50 last:border-0 gap-2',
+                  'grid grid-cols-[1fr_44px_80px] items-center px-4 py-2 border-b border-stone-50 last:border-0 gap-2',
                   isEmpako && isActive ? 'bg-amber-50/40' : isActive ? 'bg-emerald-50/40' : '',
                 )}
               >
@@ -2422,21 +2597,10 @@ function StopEditDialog({
                   </div>
                 )}
                 <input
-                  type="number" min={0} value={ordVal}
-                  onChange={e => handleOrdChange(p.id, e.target.value)}
+                  type="number" min={0} max={maxVal} value={val}
+                  onChange={e => setAmounts(prev => ({ ...prev, [p.id]: e.target.value }))}
                   onFocus={e => e.target.select()}
                   className="w-full px-2 py-1 text-sm font-mono text-right border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300 [appearance:auto]"
-                />
-                <input
-                  type="number" min={0} max={ordN} value={dlvVal}
-                  onChange={e => setDlvAmounts(prev => ({ ...prev, [p.id]: e.target.value }))}
-                  onFocus={e => e.target.select()}
-                  className={cn(
-                    'w-full px-2 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 [appearance:auto]',
-                    isPartialRow
-                      ? 'border-amber-300 bg-amber-50/60 focus:ring-amber-200'
-                      : 'border-stone-200 focus:ring-stone-300',
-                  )}
                 />
               </div>
             )
@@ -2518,7 +2682,7 @@ function StopCard({ stop, index, truckId, customerName, orderItems, orderTotalCa
                 <span className="text-[10px] font-sans font-medium px-1.5 py-0.5 rounded-full bg-stone-100 text-stone-500 flex-shrink-0">Drop</span>
               )}
               {isPartial && (
-                <span className="text-[10px] font-sans font-medium px-1.5 py-0.5 rounded-full bg-amber-50 text-amber-600 flex-shrink-0">Partial</span>
+                <span className="text-[10px] font-semibold font-sans px-2 py-0.5 rounded bg-amber-400 text-white flex-shrink-0 tracking-wide uppercase">Partial</span>
               )}
             </div>
           </div>
@@ -2565,60 +2729,32 @@ function StopCard({ stop, index, truckId, customerName, orderItems, orderTotalCa
           ordMap[i.productId] = i.cases
           empakoMap[i.productId] = i.empako ?? false
         }
-
-        const pidSet = new Set([
-          ...stop.items.map(i => i.productId),
-          ...(isPartial ? orderItems.map(i => i.productId) : []),
-        ])
-        const tableProds = [...pidSet]
-          .map(id => productById.get(id))
-          .filter((p): p is DeliveryProduct => p != null)
+        const tableProds = [...products]
           .sort((a, b) => a.display_order - b.display_order)
-
-        if (!tableProds.length) return null
+          .filter(p => !CONDITIONAL_SHOW_PRODUCT_IDS.has(p.id) || (dlvMap[p.id] ?? 0) > 0 || (ordMap[p.id] ?? 0) > 0)
         return (
           <div className="border-t border-stone-100 overflow-x-auto">
-            <table className="text-xs font-sans">
+            <table className="text-xs font-sans w-full">
               <thead>
                 <tr className="border-b border-stone-100 bg-stone-50/70">
-                  <th className="px-3 py-1.5 text-left font-medium text-stone-300 whitespace-nowrap w-10" />
                   {tableProds.map(p => (
-                    <th key={p.id} className="px-2 py-1.5 text-left font-medium text-stone-400 whitespace-nowrap pr-4 last:pr-2">
+                    <th key={p.id} className="px-2 py-1.5 text-center font-medium text-stone-400 whitespace-nowrap">
                       {getProductAbbr(p)}
                     </th>
                   ))}
                 </tr>
               </thead>
               <tbody>
-                {isPartial && (
-                  <tr className="border-b border-stone-50">
-                    <td className="px-3 py-1.5 text-stone-400 font-medium whitespace-nowrap text-[10px] uppercase tracking-wide">Ord</td>
-                    {tableProds.map(p => (
-                      <td key={p.id} className="px-2 py-1.5 text-left font-mono tabular-nums text-stone-600 pr-4 last:pr-2">
-                        {ordMap[p.id] != null ? (
-                          <>
-                            {ordMap[p.id]}
-                            {empakoMap[p.id] && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
-                          </>
-                        ) : <span className="text-stone-200">—</span>}
-                      </td>
-                    ))}
-                  </tr>
-                )}
                 <tr>
-                  <td className={cn('px-3 py-1.5 font-medium whitespace-nowrap text-[10px] uppercase tracking-wide', isPartial ? 'text-amber-600' : 'text-stone-400')}>
-                    Dlv
-                  </td>
-                  {tableProds.map(p => (
-                    <td key={p.id} className="px-2 py-1.5 text-left font-mono tabular-nums text-stone-700 pr-4 last:pr-2">
-                      {dlvMap[p.id] != null ? (
-                        <>
-                          {dlvMap[p.id]}
-                          {empakoMap[p.id] && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
-                        </>
-                      ) : <span className="text-stone-200">—</span>}
-                    </td>
-                  ))}
+                  {tableProds.map(p => {
+                    const val = isPartial ? (dlvMap[p.id] ?? 0) : (ordMap[p.id] ?? 0)
+                    return (
+                      <td key={p.id} className={cn('px-2 py-1.5 text-center font-mono tabular-nums', val > 0 ? 'font-bold text-stone-700' : 'text-stone-300')}>
+                        {val}
+                        {empakoMap[p.id] && val > 0 && <div className="text-[8px] font-semibold text-orange-500 leading-none mt-0.5">40x1</div>}
+                      </td>
+                    )
+                  })}
                 </tr>
               </tbody>
             </table>
@@ -2666,11 +2802,9 @@ function FulfilledOrderCard({
   const fmtDate = (d: string) =>
     new Date(d + 'T00:00:00').toLocaleDateString('en-US', { month: 'short', day: 'numeric' })
 
-  const itemRows = remaining
-    ? Object.entries(remaining.byItem)
-        .filter(([, v]) => v.ordered > 0)
-        .sort(([a], [b]) => (productById.get(a)?.display_order ?? 999) - (productById.get(b)?.display_order ?? 999))
-    : []
+  const tableProds = [...products]
+    .sort((a, b) => a.display_order - b.display_order)
+    .filter(p => !CONDITIONAL_SHOW_PRODUCT_IDS.has(p.id) || (remaining?.byItem[p.id]?.delivered ?? 0) > 0)
 
   return (
     <div className="bg-white rounded-xl border border-emerald-100 shadow-sm overflow-hidden">
@@ -2699,41 +2833,38 @@ function FulfilledOrderCard({
       </div>
 
       {/* ── Product table ── */}
-      {itemRows.length > 0 ? (
-        <div className="border-t border-stone-100 overflow-x-auto">
-          <table className="text-xs font-sans">
-            <thead>
-              <tr className="border-b border-stone-100 bg-stone-50/70">
-                <th className="px-3 py-1.5 text-left font-medium text-stone-300 whitespace-nowrap w-10" />
-                {itemRows.map(([pid]) => (
-                  <th key={pid} className="px-2 py-1.5 text-left font-medium text-stone-400 whitespace-nowrap pr-4 last:pr-2">
-                    {getProductAbbr({ id: pid, name: productById.get(pid)?.name ?? pid })}
-                  </th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              <tr>
-                <td className="px-3 py-1.5 text-emerald-600 font-medium whitespace-nowrap text-[10px] uppercase tracking-wide">Dlv</td>
-                {itemRows.map(([pid, v]) => (
-                  <td key={pid} className={cn('px-2 py-1.5 text-left font-mono tabular-nums font-semibold pr-4 last:pr-2', v.delivered === 0 ? 'text-stone-200' : 'text-emerald-600')}>
-                    {v.delivered}
+      <div className="border-t border-stone-100 overflow-x-auto">
+        <table className="text-xs font-sans w-full">
+          <thead>
+            <tr className="border-b border-stone-100 bg-stone-50/70">
+              {tableProds.map(p => (
+                <th key={p.id} className="px-2 py-1.5 text-center font-medium text-stone-400 whitespace-nowrap">
+                  {getProductAbbr(p)}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            <tr>
+              {tableProds.map(p => {
+                const dlv = remaining?.byItem[p.id]?.delivered ?? 0
+                return (
+                  <td key={p.id} className={cn('px-2 py-1.5 text-center font-mono tabular-nums', dlv > 0 ? 'font-bold text-emerald-600' : 'text-stone-300')}>
+                    {dlv}
                   </td>
-                ))}
-              </tr>
-            </tbody>
-          </table>
-        </div>
-      ) : (
-        <p className="px-3 pb-2 text-xs text-stone-300 font-sans">No items</p>
-      )}
+                )
+              })}
+            </tr>
+          </tbody>
+        </table>
+      </div>
 
       {/* Notes */}
       {order.notes && (
         <p className="px-3 pt-1 pb-1 text-xs font-sans text-stone-400 italic border-t border-stone-50">{order.notes}</p>
       )}
 
-      {/* Past deliveries — toggle button + inline expand below */}
+      {/* Deliveries — toggle button + inline expand below */}
       <div className="border-t border-stone-100">
         <button
           onClick={() => setShowDeliveries(v => !v)}
@@ -2745,7 +2876,7 @@ function FulfilledOrderCard({
           >
             <path d="M9 18l6-6-6-6" />
           </svg>
-          Past Deliveries
+          Deliveries
         </button>
         {showDeliveries && deliveries.length > 0 && (
           <div className="px-3 pb-2 space-y-0.5 border-t border-stone-50">
@@ -2789,7 +2920,7 @@ function FulfilledOrderCard({
 function PartialDialog({
   open, onClose, initialOrderId, initialTruckId,
   orders, trucks, products, productById, customerById,
-  orderRemainingMap, orderItemsByOrder, remainingInventory, truckLoads, truckProductTotals, onSubmit,
+  orderRemainingMap, orderItemsByOrder, remainingInventory, remaining40x1, truckLoads, truckProductTotals, onSubmit,
 }: {
   open: boolean
   onClose: () => void
@@ -2803,6 +2934,7 @@ function PartialDialog({
   orderRemainingMap: Map<number, OrderRemaining>
   orderItemsByOrder: Record<number, OrderItem[]>
   remainingInventory: Record<string, number>
+  remaining40x1: Record<string, number>
   truckLoads: Record<number, number>
   truckProductTotals: Record<number, Record<string, number>>
   onSubmit: (orderId: number, truckId: number, items: { productId: string; cases: number }[]) => Promise<void>
@@ -2844,8 +2976,10 @@ function PartialDialog({
     if (n <= 0) return false
     const isEmpako = !SPREAD_PRODUCT_IDS.has(pid) &&
       (selectedOrderId ? (orderItemsByOrder[selectedOrderId] ?? []).find(i => i.product_id === pid)?.empako ?? false : false)
-    const needed = isEmpako ? n * 2 : n
-    return needed > (remainingInventory[pid] ?? 0)
+    const avail = isEmpako
+      ? (remaining40x1[pid] ?? 0) + Math.floor((remainingInventory[pid] ?? 0) / 2)
+      : (remainingInventory[pid] ?? 0)
+    return n > avail
   })
 
   async function handleSubmit() {
@@ -2868,25 +3002,14 @@ function PartialDialog({
         </DialogHeader>
 
         <div className="space-y-3">
-          {/* Order selector */}
+          {/* Order display (pre-selected, read-only) */}
           <div className="space-y-1">
             <label className="text-xs font-medium text-stone-500 font-sans">Order</label>
-            <select
-              value={selectedOrderId ?? ''}
-              onChange={e => setSelectedOrderId(e.target.value ? Number(e.target.value) : null)}
-              className="w-full px-3 py-2 text-sm font-sans border border-stone-200 rounded-lg bg-white focus:outline-none focus:ring-2 focus:ring-stone-300"
-            >
-              <option value="">Select order…</option>
-              {eligibleOrders.map(o => {
-                const c   = customerById.get(o.customer_id)
-                const rem = orderRemainingMap.get(o.id)
-                return (
-                  <option key={o.id} value={o.id}>
-                    {c?.name ?? `Order #${o.id}`} — {rem?.totalRemaining ?? 0} cs remaining
-                  </option>
-                )
-              })}
-            </select>
+            <div className="w-full px-3 py-2 text-sm font-sans border border-stone-100 rounded-lg bg-stone-50 text-stone-700">
+              {selectedOrderId
+                ? (customerById.get(orders.find(o => o.id === selectedOrderId)?.customer_id ?? -1)?.name ?? `Order #${selectedOrderId}`)
+                : <span className="text-stone-400">No order selected</span>}
+            </div>
           </div>
 
           {/* Truck selector */}
@@ -2927,9 +3050,7 @@ function PartialDialog({
                 <thead className="bg-stone-50 sticky top-0">
                   <tr>
                     <th className="px-3 py-2 text-left text-stone-500 font-medium">Product</th>
-                    <th className="px-3 py-2 text-right text-stone-500 font-medium">Ordered</th>
                     <th className="px-3 py-2 text-right text-stone-500 font-medium">Remaining</th>
-                    <th className="px-3 py-2 text-right text-stone-500 font-medium">Avail</th>
                     <th className="px-3 py-2 text-right text-stone-500 font-medium w-24">Send</th>
                   </tr>
                 </thead>
@@ -2940,9 +3061,9 @@ function PartialDialog({
                     .map(([pid, v]) => {
                       const isEmpako = !SPREAD_PRODUCT_IDS.has(pid) &&
                         (selectedOrderId ? (orderItemsByOrder[selectedOrderId] ?? []).find(i => i.product_id === pid)?.empako ?? false : false)
-                      const rawAvail = remainingInventory[pid] ?? 0
-                      // For empako items: avail in 40x1 units = floor(20x1 remaining / 2)
-                      const avail = isEmpako ? Math.floor(rawAvail / 2) : rawAvail
+                      const avail = isEmpako
+                        ? (remaining40x1[pid] ?? 0) + Math.floor((remainingInventory[pid] ?? 0) / 2)
+                        : (remainingInventory[pid] ?? 0)
                       const effectiveMax = Math.min(v.remaining, avail)
                       const sendVal = parseInt(sendAmounts[pid] ?? '0') || 0
                       const overInventory = sendVal > avail
@@ -2955,14 +3076,10 @@ function PartialDialog({
                               <span className="ml-1.5 text-[9px] font-semibold font-sans px-1 py-0.5 rounded bg-amber-100 text-amber-700">40×1</span>
                             )}
                           </td>
-                          <td className="px-3 py-2 text-right text-stone-400 tabular-nums">{v.ordered}</td>
                           <td className="px-3 py-2 text-right tabular-nums font-semibold">
                             <span className={dynamicRemaining === 0 ? 'text-emerald-500' : 'text-stone-500'}>
                               {dynamicRemaining}
                             </span>
-                          </td>
-                          <td className={cn('px-3 py-2 text-right tabular-nums text-xs', avail < v.remaining ? 'text-amber-600 font-semibold' : 'text-stone-400')}>
-                            {avail}
                           </td>
                           <td className="px-2 py-1.5">
                             <div className="flex items-center gap-1">

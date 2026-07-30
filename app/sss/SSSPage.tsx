@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils'
 import { formatPeso } from '@/lib/payroll'
 import { getSSSTableView, recomputeSSSForWeek, type SSSTableRow } from '@/lib/sss'
 import { getLastWednesdayOfMonth, getSSSPeriodForMonth } from '@/lib/sssPeriods'
-import { classifyJob, getJobColorConfig, CANDY_TYPES } from '@/lib/types'
+import { classifyJob, getJobColorConfig, CANDY_TYPES, nameTableFormat } from '@/lib/types'
 import { useCompany } from '@/lib/company-context'
 
 ModuleRegistry.registerModules([AllCommunityModule])
@@ -156,7 +156,7 @@ function makeJobHeaderRow(job: string): GridRow {
 
 function toGridRow(r: SSSTableRow): GridRow {
   return {
-    name: [r.last_name, r.first_name].filter(Boolean).join(', '),
+    name: nameTableFormat(r),
     daily_salary: r.daily_salary,
     monthly_total: r.monthly_total,
     total_mcr: r.total_mcr,
@@ -415,7 +415,7 @@ export function SSSPage() {
             styles: { fontStyle: 'bold' as const, fillColor: [240, 240, 240] as [number, number, number] },
           }])
           body.push(...jobRows.map((r) => [
-            [r.last_name, r.first_name].filter(Boolean).join(', '),
+            nameTableFormat(r),
             fp(r.daily_salary), fp(r.monthly_total), fp(r.total_mcr),
             fp(r.mcr_employer), fp(r.mcr_employee), fp(r.mcr_total),
             fp(r.sss_employer), fp(r.sss_employee), fp(r.sss_total),

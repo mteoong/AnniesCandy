@@ -34,6 +34,7 @@ export type Order = {
   status: OrderStatus
   notes: string | null
   empaka_note?: string | null
+  order_type?: 'regular' | 'bodega'
   created_at: string
 }
 
@@ -81,11 +82,31 @@ export const SPREAD_PRODUCT_IDS = new Set([
   'CHOC_SPREAD_DARK_330',
 ])
 
+// Products hidden in order/stop card tables unless their value is non-zero
+export const CONDITIONAL_SHOW_PRODUCT_IDS = new Set([
+  'LANGKA_SP',
+  'CHOC_SPREAD_CLASSIC_330',
+  'CHOC_SPREAD_CLASSIC_165',
+  'CHOC_SPREAD_DARK_330',
+])
+
 export type WarehouseDaily = {
   date: string
   product_id: string
   pickup_orders_total: number
   warehouse_stock: number
+}
+
+export type BodegaItem = {
+  itemId: number | null
+  cases: number
+}
+
+export type BodegaRow = {
+  orderId: number
+  customerId: number
+  customerName: string
+  items: Record<string, BodegaItem>
 }
 
 export type WarehouseDrop = {
@@ -108,6 +129,7 @@ export const PRODUCT_ABBR: Record<string, string> = {
   CHOC_KING:               'CNK',
   CHOC_SP:                 'CNSP',
   CHOC_XL:                 'CNXL',
+  LANGKA_SP:               'LSP',
   CHOC_SPREAD_CLASSIC_330: 'C330G',
   CHOC_SPREAD_CLASSIC_165: 'C165G',
   CHOC_SPREAD_DARK_330:    'D330G',

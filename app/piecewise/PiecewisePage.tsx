@@ -7,13 +7,15 @@ import {
   calcKingPay, calcSpPay, calcCoinsPay, candyPerPerson, formatPeso, todayString,
 } from '@/lib/payroll'
 import { Toaster } from '@/components/ui/toast'
-import { CANDY_CONFIG, PIECEWISE_PREFIXES, type Employee, type PayrollConfig, type HolidayType, type PiecewiseType } from '@/lib/types'
+import { CANDY_CONFIG, PIECEWISE_PREFIXES, nameInlineFormat, type Employee, type PayrollConfig, type HolidayType, type PiecewiseType } from '@/lib/types'
 
 type Props = {
   initialEmployees: Employee[]
   config: PayrollConfig
   configError?: string | null
 }
+
+type DailyRate = '0' | 'Half' | 'Full'
 
 const HOLIDAY_OPTIONS: HolidayType[] = ['Regular Day', '30%', '100%']
 
@@ -45,6 +47,24 @@ function calcPay(
   return calcCoinsPay(worker, totalCandy, presentCount, holiday, config)
 }
 
+function getDailyMultiplier(rate: DailyRate): number {
+  if (rate === 'Full') return 1
+  if (rate === 'Half') return 0.5
+  return 0
+}
+
+function hoursFromRate(rate: DailyRate): number {
+  if (rate === 'Full') return 8
+  if (rate === 'Half') return 4
+  return 0
+}
+
+function rateFromHours(hours: number): DailyRate {
+  if (hours >= 8) return 'Full'
+  if (hours >= 4) return 'Half'
+  return '0'
+}
+
 // ── Group Card ────────────────────────────────────────────────────────────────
 function PiecewiseGroupCard({
   jobCode,
@@ -52,22 +72,26 @@ function PiecewiseGroupCard({
   workers,
   candy,
   presentMap,
+  dailyRateMap,
   config,
   holiday,
   saving,
   onCandyChange,
   onToggle,
+  onDailyRateChange,
 }: {
   jobCode: string
   type: PiecewiseType
   workers: Employee[]
   candy: number
   presentMap: Map<number, boolean>
+  dailyRateMap: Map<number, DailyRate>
   config: PayrollConfig
   holiday: HolidayType
   saving: boolean
   onCandyChange: (val: number) => void
   onToggle: (id: number, present: boolean) => void
+  onDailyRateChange: (id: number, rate: DailyRate) => void
 }) {
   const cfg = CANDY_CONFIG[type === 'JR' ? 'JR' : type === 'COINS' ? 'COINS' : type as 'KING' | 'SP']
   const [candyInput, setCandyInput] = useState(candy.toString())
@@ -86,7 +110,7 @@ function PiecewiseGroupCard({
 
   return (
     <div className={cn(
-      'bg-white rounded-2xl border shadow-sm overflow-hidden w-64 flex-shrink-0',
+      'bg-white rounded-2xl border shadow-sm overflow-hidden w-72 flex-shrink-0',
       cfg.border,
     )}>
       {/* Header */}
@@ -122,7 +146,11 @@ function PiecewiseGroupCard({
       {/* Workers */}
       {workers.map((worker) => {
         const present = presentMap.get(worker.employee_id) ?? false
-        const pay = present ? calcPay(type, worker, candy, presentCount, holiday, config) : 0
+        const rate = dailyRateMap.get(worker.employee_id) ?? '0'
+        const piecewisePay = present ? calcPay(type, worker, candy, presentCount, holiday, config) : 0
+        const totalPay = piecewisePay + worker.daily_salary * getDailyMultiplier(rate)
+        const hasAnyPay = totalPay > 0
+
         return (
           <div
             key={worker.employee_id}
@@ -131,29 +159,51 @@ function PiecewiseGroupCard({
               present ? 'bg-white' : 'bg-stone-50/60',
             )}
           >
+            {/* Checkbox */}
             <button
               onClick={() => onToggle(worker.employee_id, !present)}
               className={cn(
-                'relative inline-flex h-5 w-9 items-center rounded-full transition-colors flex-shrink-0 cursor-pointer',
-                present ? 'bg-emerald-500' : 'bg-stone-200',
+                'w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 transition-colors cursor-pointer',
+                present ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-stone-300 hover:border-stone-400',
               )}
             >
-              <span className={cn(
-                'inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform',
-                present ? 'translate-x-4' : 'translate-x-0.5',
-              )} />
+              {present && (
+                <svg width="9" height="7" viewBox="0 0 9 7" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M1 3.5l2.5 2.5 4.5-5" />
+                </svg>
+              )}
             </button>
+
+            {/* Name */}
             <span className={cn(
-              'flex-1 text-xs font-medium font-sans truncate',
+              'flex-1 text-xs font-medium font-sans truncate min-w-0',
               present ? 'text-stone-700' : 'text-stone-400',
             )}>
-              {worker.first_name} {worker.last_name}
+              {nameInlineFormat(worker)}
             </span>
+
+            {/* Daily rate selector */}
+            <div className="flex text-[10px] font-mono rounded overflow-hidden border border-stone-200 flex-shrink-0">
+              {(['0', 'Half', 'Full'] as const).map((r) => (
+                <button
+                  key={r}
+                  onClick={() => onDailyRateChange(worker.employee_id, r)}
+                  className={cn(
+                    'px-1.5 py-0.5 transition-colors leading-none cursor-pointer',
+                    rate === r ? 'bg-stone-700 text-white' : 'text-stone-400 hover:bg-stone-50',
+                  )}
+                >
+                  {r === 'Half' ? '½' : r === 'Full' ? '1' : '0'}
+                </button>
+              ))}
+            </div>
+
+            {/* Pay */}
             <span className={cn(
-              'text-xs font-mono font-semibold flex-shrink-0',
-              present ? 'text-stone-700' : 'text-stone-300',
+              'text-xs font-mono font-semibold flex-shrink-0 w-14 text-right',
+              hasAnyPay ? 'text-stone-700' : 'text-stone-300',
             )}>
-              {formatPeso(pay)}
+              {formatPeso(totalPay)}
             </span>
           </div>
         )
@@ -168,6 +218,7 @@ export function PiecewisePage({ initialEmployees, config, configError }: Props) 
   const [holiday, setHoliday] = useState<HolidayType>('Regular Day')
   const [candyMap, setCandyMap] = useState<Map<string, number>>(new Map())
   const [presentMap, setPresentMap] = useState<Map<number, boolean>>(new Map())
+  const [dailyRateMap, setDailyRateMap] = useState<Map<number, DailyRate>>(new Map())
   const [savingGroups, setSavingGroups] = useState<Set<string>>(new Set())
 
   const companies = useMemo(
@@ -196,19 +247,27 @@ export function PiecewisePage({ initialEmployees, config, configError }: Props) 
     if (!ids.length) return
     const { data } = await supabase
       .from('daily_records')
-      .select('employee_id, daily_pay, holiday')
+      .select('employee_id, daily_pay, holiday, hours, pieces')
       .eq('date', d)
       .in('employee_id', ids)
 
     const nextPresent = new Map<number, boolean>()
-    initialEmployees.forEach((e) => nextPresent.set(e.employee_id, false))
+    const nextDailyRate = new Map<number, DailyRate>()
+    initialEmployees.forEach((e) => {
+      nextPresent.set(e.employee_id, false)
+      nextDailyRate.set(e.employee_id, '0')
+    })
     if (data) {
-      data.forEach((r: { employee_id: number; daily_pay: number; holiday: HolidayType }) => {
-        if (r.daily_pay > 0) nextPresent.set(r.employee_id, true)
+      data.forEach((r: { employee_id: number; daily_pay: number; holiday: HolidayType; hours: number; pieces: number }) => {
+        const rate = rateFromHours(r.hours ?? 0)
+        const present = r.pieces > 0 || rate !== '0'
+        nextPresent.set(r.employee_id, present)
+        nextDailyRate.set(r.employee_id, rate)
         if (r.holiday) setHoliday(r.holiday)
       })
     }
     setPresentMap(nextPresent)
+    setDailyRateMap(nextDailyRate)
   }, [initialEmployees])
 
   useEffect(() => { fetchRecords(date) }, [date, fetchRecords])
@@ -219,6 +278,7 @@ export function PiecewisePage({ initialEmployees, config, configError }: Props) 
     workers: Employee[],
     currentCandy: number,
     currentPresent: Map<number, boolean>,
+    currentDailyRate: Map<number, DailyRate>,
     currentHoliday: HolidayType,
   ) => {
     setSavingGroups((prev) => new Set(prev).add(jobCode))
@@ -227,14 +287,16 @@ export function PiecewisePage({ initialEmployees, config, configError }: Props) 
 
     const records = workers.map((w) => {
       const present = currentPresent.get(w.employee_id) ?? false
-      const pay = present ? calcPay(type, w, currentCandy, presentCount, currentHoliday, config) : 0
+      const rate = currentDailyRate.get(w.employee_id) ?? '0'
+      const piecewisePay = present ? calcPay(type, w, currentCandy, presentCount, currentHoliday, config) : 0
+      const totalPay = piecewisePay + w.daily_salary * getDailyMultiplier(rate)
       return {
         employee_id: w.employee_id,
         date,
         job: w.job,
-        hours: 8,
+        hours: hoursFromRate(rate),
         pieces: present ? Math.round(cpp) : 0,
-        daily_pay: pay,
+        daily_pay: totalPay,
         nightshift: w.nightshift,
         holiday: currentHoliday,
       }
@@ -245,20 +307,28 @@ export function PiecewisePage({ initialEmployees, config, configError }: Props) 
 
   const handleCandyChange = (jobCode: string, type: PiecewiseType, workers: Employee[], val: number) => {
     setCandyMap((prev) => new Map(prev).set(jobCode, val))
-    upsertGroup(jobCode, type, workers, val, presentMap, holiday)
+    upsertGroup(jobCode, type, workers, val, presentMap, dailyRateMap, holiday)
   }
 
   const handleToggle = (jobCode: string, type: PiecewiseType, workers: Employee[], empId: number, present: boolean) => {
-    const next = new Map(presentMap).set(empId, present)
-    setPresentMap(next)
-    upsertGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, next, holiday)
+    const nextPresent = new Map(presentMap).set(empId, present)
+    const nextDailyRate = new Map(dailyRateMap).set(empId, present ? 'Full' : '0')
+    setPresentMap(nextPresent)
+    setDailyRateMap(nextDailyRate)
+    upsertGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, nextPresent, nextDailyRate, holiday)
+  }
+
+  const handleDailyRateChange = (jobCode: string, type: PiecewiseType, workers: Employee[], empId: number, rate: DailyRate) => {
+    const nextDailyRate = new Map(dailyRateMap).set(empId, rate)
+    setDailyRateMap(nextDailyRate)
+    upsertGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, presentMap, nextDailyRate, holiday)
   }
 
   const handleHolidayChange = async (h: HolidayType) => {
     setHoliday(h)
     for (const [type, byJob] of byType) {
       for (const [jobCode, workers] of byJob) {
-        await upsertGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, presentMap, h)
+        await upsertGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, presentMap, dailyRateMap, h)
       }
     }
   }
@@ -353,11 +423,13 @@ export function PiecewisePage({ initialEmployees, config, configError }: Props) 
                     workers={workers}
                     candy={candyMap.get(jobCode) ?? 0}
                     presentMap={presentMap}
+                    dailyRateMap={dailyRateMap}
                     config={config}
                     holiday={holiday}
                     saving={savingGroups.has(jobCode)}
                     onCandyChange={(val) => handleCandyChange(jobCode, type, workers, val)}
                     onToggle={(id, present) => handleToggle(jobCode, type, workers, id, present)}
+                    onDailyRateChange={(id, rate) => handleDailyRateChange(jobCode, type, workers, id, rate)}
                   />
                 ))}
               </div>

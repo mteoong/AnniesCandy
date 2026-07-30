@@ -1,12 +1,17 @@
 'use client'
 
-import { useState, useRef } from 'react'
+import { useState, useRef, useMemo, useEffect } from 'react'
 import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { toast, Toaster } from '@/components/ui/toast'
 import { DayPicker } from '@/components/DayPicker'
 import { SPREAD_PRODUCT_IDS } from '@/lib/delivery-types'
-import type { DeliveryProduct, Customer, Truck } from '@/lib/delivery-types'
+import type { DeliveryProduct, Customer, Truck, BodegaRow, BodegaItem } from '@/lib/delivery-types'
+import { BodegaTable } from '../BodegaTable'
+
+export type { BodegaRow, BodegaItem }
+
+// ── Props ─────────────────────────────────────────────────────────────────────
 
 type Props = {
   products: DeliveryProduct[]
@@ -16,6 +21,7 @@ type Props = {
   initialInventory40x1: Record<string, number>
   initialAvailability: Record<number, boolean>
   initialWarehouse: Record<string, { pickup: number; stock: number }>
+  initialBodegas: BodegaRow[]
   date: string
 }
 
@@ -27,6 +33,7 @@ export function InputsPage({
   initialInventory40x1,
   initialAvailability,
   initialWarehouse,
+  initialBodegas,
   date,
 }: Props) {
   const [tab, setTab] = useState<'daily' | 'orders'>('daily')
@@ -37,10 +44,15 @@ export function InputsPage({
   const [availability, setAvailability] = useState(initialAvailability)
   const [warehouse, setWarehouse] = useState(initialWarehouse)
 
+  // Bodega state
+  const [bodegas, setBodegas] = useState<BodegaRow[]>(initialBodegas)
+  const [bodegaDrawerOpen, setBodegaDrawerOpen] = useState(false)
+
   // Order form state
   const [customers, setCustomers] = useState(initialCustomers)
   const [customerId, setCustomerId] = useState('')
   const [newCustomerName, setNewCustomerName] = useState('')
+  const [orderType, setOrderType] = useState<'regular' | 'bodega'>('regular')
   const [dateType, setDateType] = useState<'specific' | 'range'>('specific')
   const [deliveryDate, setDeliveryDate] = useState(date)
   const [deliveryDateStart, setDeliveryDateStart] = useState(date)
@@ -51,13 +63,40 @@ export function InputsPage({
   const [savingOrder, setSavingOrder] = useState(false)
   const [savingCustomer, setSavingCustomer] = useState(false)
 
-  // Debounce refs
+  // Debounce refs — mirrors of state for use inside setTimeout closures
   const inventoryRef = useRef(initialInventory)
   const inventory40x1Ref = useRef(initialInventory40x1)
   const warehouseRef = useRef(initialWarehouse)
+  const bodegaRef = useRef<BodegaRow[]>(initialBodegas)
   const inventoryTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const inventory40x1Timers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
   const warehouseTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+  const bodegaTimers = useRef<Map<string, ReturnType<typeof setTimeout>>>(new Map())
+
+  // Pickup totals derived from bodega orders — drives the Warehouse pickup column
+  const bodegaPickup = useMemo(() => {
+    const totals: Record<string, number> = {}
+    for (const row of bodegas) {
+      for (const [pid, item] of Object.entries(row.items)) {
+        totals[pid] = (totals[pid] ?? 0) + item.cases
+      }
+    }
+    return totals
+  }, [bodegas])
+
+  // On mount, sync pickup totals to warehouse_daily so the dashboard reads correct values
+  useEffect(() => {
+    for (const p of products) {
+      const pickup = bodegaRef.current.reduce((s, r) => s + (r.items[p.id]?.cases ?? 0), 0)
+      const stock = warehouseRef.current[p.id]?.stock ?? 0
+      supabase.from('warehouse_daily')
+        .upsert(
+          { date, product_id: p.id, pickup_orders_total: pickup, warehouse_stock: stock },
+          { onConflict: 'date,product_id' },
+        )
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [])
 
   const dateLabel = new Date(date + 'T00:00:00').toLocaleDateString('en-US', {
     weekday: 'long', month: 'long', day: 'numeric', year: 'numeric',
@@ -110,23 +149,80 @@ export function InputsPage({
     }
   }
 
-  // ── Warehouse ─────────────────────────────────────────────────────────────────
+  // ── Warehouse stock (pickup is now auto-computed from bodega orders) ──────────
 
-  function handleWarehouseChange(productId: string, field: 'pickup' | 'stock', raw: string) {
+  function handleWarehouseStockChange(productId: string, raw: string) {
     const val = parseInt(raw) || 0
     const prev = warehouseRef.current[productId] ?? { pickup: 0, stock: 0 }
-    const next = { ...prev, [field]: val }
-    warehouseRef.current = { ...warehouseRef.current, [productId]: next }
+    warehouseRef.current = { ...warehouseRef.current, [productId]: { ...prev, stock: val } }
     setWarehouse({ ...warehouseRef.current })
 
     const existing = warehouseTimers.current.get(productId)
     if (existing) clearTimeout(existing)
     warehouseTimers.current.set(productId, setTimeout(() => {
       warehouseTimers.current.delete(productId)
-      const vals = warehouseRef.current[productId] ?? { pickup: 0, stock: 0 }
+      const stock = warehouseRef.current[productId]?.stock ?? 0
+      const pickup = bodegaRef.current.reduce((s, r) => s + (r.items[productId]?.cases ?? 0), 0)
       supabase.from('warehouse_daily')
-        .upsert({ date, product_id: productId, pickup_orders_total: vals.pickup, warehouse_stock: vals.stock }, { onConflict: 'date,product_id' })
+        .upsert({ date, product_id: productId, pickup_orders_total: pickup, warehouse_stock: stock }, { onConflict: 'date,product_id' })
         .then(({ error }) => { if (error) toast('Failed to save warehouse data', 'error') })
+    }, 500))
+  }
+
+  // ── Bodega cell edit ──────────────────────────────────────────────────────────
+
+  function handleBodegaChange(orderId: number, productId: string, raw: string) {
+    const val = Math.max(0, parseInt(raw) || 0)
+
+    bodegaRef.current = bodegaRef.current.map(row => {
+      if (row.orderId !== orderId) return row
+      return {
+        ...row,
+        items: { ...row.items, [productId]: { itemId: row.items[productId]?.itemId ?? null, cases: val } },
+      }
+    })
+    setBodegas([...bodegaRef.current])
+
+    const key = `${orderId}-${productId}`
+    const existing = bodegaTimers.current.get(key)
+    if (existing) clearTimeout(existing)
+    bodegaTimers.current.set(key, setTimeout(async () => {
+      bodegaTimers.current.delete(key)
+
+      const row = bodegaRef.current.find(r => r.orderId === orderId)
+      if (!row) return
+      const item = row.items[productId]
+      const cases = item?.cases ?? 0
+      const itemId = item?.itemId ?? null
+
+      if (cases === 0 && itemId !== null) {
+        const { error } = await supabase.from('order_items').delete().eq('id', itemId)
+        if (error) { toast('Failed to save', 'error'); return }
+        bodegaRef.current = bodegaRef.current.map(r =>
+          r.orderId !== orderId ? r : { ...r, items: { ...r.items, [productId]: { itemId: null, cases: 0 } } }
+        )
+        setBodegas([...bodegaRef.current])
+      } else if (cases > 0 && itemId === null) {
+        const { data, error } = await supabase.from('order_items')
+          .insert({ order_id: orderId, product_id: productId, cases, empako: false })
+          .select('id').single()
+        if (error || !data) { toast('Failed to save', 'error'); return }
+        const newId = (data as { id: number }).id
+        bodegaRef.current = bodegaRef.current.map(r =>
+          r.orderId !== orderId ? r : { ...r, items: { ...r.items, [productId]: { itemId: newId, cases } } }
+        )
+        setBodegas([...bodegaRef.current])
+      } else if (cases > 0 && itemId !== null) {
+        const { error } = await supabase.from('order_items').update({ cases }).eq('id', itemId)
+        if (error) { toast('Failed to save', 'error'); return }
+      }
+
+      // Sync updated pickup total to warehouse_daily
+      const pickup = bodegaRef.current.reduce((s, r) => s + (r.items[productId]?.cases ?? 0), 0)
+      const stock = warehouseRef.current[productId]?.stock ?? 0
+      supabase.from('warehouse_daily')
+        .upsert({ date, product_id: productId, pickup_orders_total: pickup, warehouse_stock: stock }, { onConflict: 'date,product_id' })
+        .then(({ error: wErr }) => { if (wErr) console.error('Failed to sync warehouse pickup', wErr) })
     }, 500))
   }
 
@@ -178,6 +274,7 @@ export function InputsPage({
         delivery_date_end: dateEnd,
         status: 'open',
         notes: orderNotes.trim() || null,
+        order_type: orderType,
       })
       .select().single()
     if (orderErr || !order) { setSavingOrder(false); toast('Failed to create order', 'error'); return }
@@ -188,11 +285,38 @@ export function InputsPage({
     setSavingOrder(false)
     if (itemsErr) { toast('Order created but items failed to save', 'error'); return }
 
+    // If it's a bodega order covering the current date, add it to local state
+    if (orderType === 'bodega' && dateStart <= date && date <= dateEnd) {
+      const { data: newItems } = await supabase.from('order_items').select('*').eq('order_id', order.id)
+      const itemsMap: BodegaRow['items'] = {}
+      for (const it of newItems ?? []) {
+        itemsMap[it.product_id] = { itemId: it.id, cases: it.cases }
+      }
+      const customer = customers.find(c => c.id === cid)
+      const newRow: BodegaRow = {
+        orderId: order.id,
+        customerId: cid,
+        customerName: customer?.name ?? 'Unknown',
+        items: itemsMap,
+      }
+      bodegaRef.current = [...bodegaRef.current, newRow]
+      setBodegas([...bodegaRef.current])
+
+      // Sync all pickup totals to warehouse_daily
+      for (const p of products) {
+        const pickup = bodegaRef.current.reduce((s, r) => s + (r.items[p.id]?.cases ?? 0), 0)
+        const stock = warehouseRef.current[p.id]?.stock ?? 0
+        supabase.from('warehouse_daily')
+          .upsert({ date, product_id: p.id, pickup_orders_total: pickup, warehouse_stock: stock }, { onConflict: 'date,product_id' })
+      }
+    }
+
     toast('Order saved')
     setCustomerId('')
     setItemAmounts({})
     setItemEmpako({})
     setOrderNotes('')
+    setOrderType('regular')
     setDateType('specific')
     setDeliveryDate(date)
     setDeliveryDateStart(date)
@@ -213,7 +337,6 @@ export function InputsPage({
           <h1 className="font-display text-xl font-semibold text-stone-800 tracking-tight">Delivery Inputs</h1>
           {tab === 'daily' && <DayPicker date={date} />}
         </div>
-        {/* Tabs */}
         <div className="flex px-6 gap-1 -mb-px">
           {(['daily', 'orders'] as const).map(t => (
             <button
@@ -305,28 +428,41 @@ export function InputsPage({
 
           {/* Warehouse */}
           <section>
-            <SectionHeading>Warehouse</SectionHeading>
+            <div className="flex items-center justify-between mb-3">
+              <h2 className="font-display text-base font-semibold text-stone-700">Warehouse</h2>
+              <button
+                onClick={() => setBodegaDrawerOpen(true)}
+                className="text-xs font-sans font-medium text-stone-500 hover:text-stone-800 border border-stone-200 rounded-lg px-3 py-1.5 hover:bg-stone-50 transition-colors"
+              >
+                Edit Bodega Orders
+              </button>
+            </div>
             <div className="bg-white rounded-2xl border border-stone-100 shadow-sm overflow-hidden">
-              <div className="grid grid-cols-[1fr_120px_120px_80px] px-5 py-2 border-b border-stone-50 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans gap-3">
+              <div className="grid grid-cols-[1fr_110px_120px_80px] px-5 py-2 border-b border-stone-50 text-[10px] font-semibold uppercase tracking-wider text-stone-400 font-sans gap-3">
                 <span>Product</span>
                 <span className="text-right">Pickup Orders</span>
                 <span className="text-right">Warehouse Stock</span>
                 <span className="text-right">Needed</span>
               </div>
               {products.map(p => {
-                const w = warehouse[p.id] ?? { pickup: 0, stock: 0 }
-                const needed = Math.max(0, w.pickup - w.stock)
+                const pickup = bodegaPickup[p.id] ?? 0
+                const stock = warehouse[p.id]?.stock ?? 0
+                const needed = Math.max(0, pickup - stock)
                 return (
-                  <div key={p.id} className="grid grid-cols-[1fr_120px_120px_80px] items-center px-5 py-3 border-b border-stone-50 last:border-0 gap-3">
+                  <div key={p.id} className="grid grid-cols-[1fr_110px_120px_80px] items-center px-5 py-3 border-b border-stone-50 last:border-0 gap-3">
                     <span className="text-sm font-sans text-stone-700">{p.name}</span>
+                    {/* Pickup: read-only, auto-computed from bodega orders */}
+                    <div className={cn(
+                      'text-right font-mono text-sm px-3 py-1.5 rounded-lg select-none',
+                      pickup > 0
+                        ? 'text-stone-700 bg-stone-50 border border-stone-100'
+                        : 'text-stone-300 border border-transparent',
+                    )}>
+                      {pickup > 0 ? pickup : '—'}
+                    </div>
                     <input
-                      type="number" min={0} value={w.pickup}
-                      onChange={e => handleWarehouseChange(p.id, 'pickup', e.target.value)}
-                      className="w-full px-3 py-1.5 text-sm font-mono text-right border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
-                    />
-                    <input
-                      type="number" min={0} value={w.stock}
-                      onChange={e => handleWarehouseChange(p.id, 'stock', e.target.value)}
+                      type="number" min={0} value={warehouse[p.id]?.stock ?? 0}
+                      onChange={e => handleWarehouseStockChange(p.id, e.target.value)}
                       className="w-full px-3 py-1.5 text-sm font-mono text-right border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
                     />
                     <div className={cn('text-right font-mono font-semibold text-sm', needed > 0 ? 'text-red-600' : 'text-stone-300')}>
@@ -379,8 +515,20 @@ export function InputsPage({
               </div>
             </FormRow>
 
+            {/* Order type */}
+            <FormRow label="Order type">
+              <SegmentedControl
+                options={[
+                  { value: 'regular', label: 'Regular' },
+                  { value: 'bodega', label: 'Bodega' },
+                ]}
+                value={orderType}
+                onChange={v => setOrderType(v as 'regular' | 'bodega')}
+              />
+            </FormRow>
+
             {/* Delivery date */}
-            <FormRow label="Delivery date">
+            <FormRow label={orderType === 'bodega' ? 'Pickup date' : 'Delivery date'}>
               <div className="flex items-center gap-3 flex-wrap">
                 <SegmentedControl
                   options={[{ value: 'specific', label: 'Specific' }, { value: 'range', label: 'Range' }]}
@@ -428,7 +576,7 @@ export function InputsPage({
                         {p.name}
                       </span>
                       <div className="flex justify-center">
-                        {isSpread ? (
+                        {isSpread || orderType === 'bodega' ? (
                           <span className="text-stone-200 text-xs font-sans">—</span>
                         ) : (
                           <input
@@ -487,6 +635,50 @@ export function InputsPage({
           </div>
         </div>
       )}
+
+      {/* ── Bodega Orders Drawer ── */}
+      <div
+        className={cn(
+          'fixed inset-0 bg-black/20 z-40 transition-opacity duration-300',
+          bodegaDrawerOpen ? 'opacity-100 pointer-events-auto' : 'opacity-0 pointer-events-none',
+        )}
+        onClick={() => setBodegaDrawerOpen(false)}
+      />
+      <div
+        className={cn(
+          'fixed inset-y-0 right-0 z-50 flex flex-col bg-white shadow-2xl transition-transform duration-300 w-full max-w-5xl',
+          bodegaDrawerOpen ? 'translate-x-0' : 'translate-x-full',
+        )}
+      >
+        <div className="flex items-center justify-between px-6 py-4 border-b border-stone-100 shrink-0">
+          <div>
+            <h2 className="font-display text-base font-semibold text-stone-800">Bodega Orders</h2>
+            <p className="text-xs font-sans text-stone-400 mt-0.5">{dateLabel} — click any cell to edit</p>
+          </div>
+          <button
+            onClick={() => setBodegaDrawerOpen(false)}
+            className="p-2 rounded-lg hover:bg-stone-100 text-stone-400 hover:text-stone-700 transition-colors text-sm font-sans"
+          >
+            ✕
+          </button>
+        </div>
+        <div className="flex-1 overflow-auto p-6">
+          {bodegas.length === 0 ? (
+            <div className="flex flex-col items-center justify-center h-full text-stone-300 text-sm font-sans gap-2">
+              <p>No bodega orders for this date.</p>
+              <p className="text-xs">Create one using the <strong className="font-semibold text-stone-400">New Order</strong> tab with type set to <strong className="font-semibold text-stone-400">Bodega</strong>.</p>
+            </div>
+          ) : (
+            <BodegaTable
+              products={products}
+              bodegas={bodegas}
+              editable={true}
+              onCellChange={handleBodegaChange}
+            />
+          )}
+        </div>
+      </div>
+
     </div>
   )
 }

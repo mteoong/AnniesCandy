@@ -10,7 +10,7 @@ import { supabase } from '@/lib/supabase'
 import { cn } from '@/lib/utils'
 import { formatPeso, getWeekEnd, listWednesdays } from '@/lib/payroll'
 import { WednesdayPicker } from '@/components/WednesdayPicker'
-import { classifyJob, getJobColorConfig, CANDY_TYPES } from '@/lib/types'
+import { classifyJob, getJobColorConfig, CANDY_TYPES, nameTableFormat } from '@/lib/types'
 import type { Employee, WeeklyRecord } from '@/lib/types'
 import { useCompany } from '@/lib/company-context'
 import { getWeekTagInfo } from '@/lib/sssPeriods'
@@ -162,7 +162,7 @@ export function DeductionsPage({ employees }: Props) {
       const wr = weeklyMap.get(e.employee_id)
       return {
         employee_id: e.employee_id,
-        name: [e.last_name, e.first_name].filter(Boolean).join(', '),
+        name: nameTableFormat(e),
         gross: grossMap.get(e.employee_id) ?? 0,
         sss: wr?.sss ?? 0, philhealth: wr?.philhealth ?? 0, pagibig: wr?.pagibig ?? 0,
         sss_loan: wr?.sss_loan ?? 0, pagibig_loan: wr?.pagibig_loan ?? 0,

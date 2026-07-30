@@ -17,6 +17,16 @@ export type Employee = {
   created_at: string
 }
 
+/** "Last, First Middle" — for table rows */
+export function nameTableFormat(e: { first_name: string; middle_name?: string | null; last_name: string }): string {
+  return [e.last_name, [e.first_name, e.middle_name].filter(Boolean).join(' ')].join(', ')
+}
+
+/** "First Middle Last" — for inline display */
+export function nameInlineFormat(e: { first_name: string; middle_name?: string | null; last_name: string }): string {
+  return [e.first_name, e.middle_name, e.last_name].filter(Boolean).join(' ')
+}
+
 export const CANDY_TYPES = ['KING', 'JR', 'SP', 'COMBO', 'COINS', 'XL'] as const
 export type CandyType = (typeof CANDY_TYPES)[number]
 
