@@ -378,14 +378,14 @@ export function InputsPage({
                   ) : (
                     <input
                       type="number" min={0}
-                      value={inventory40x1[p.id] ?? 0}
+                      value={inventory40x1[p.id] || ''}
                       onChange={e => handleInventory40x1Change(p.id, e.target.value)}
                       className="w-full px-3 py-1.5 text-sm font-mono text-right border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
                     />
                   )}
                   <input
                     type="number" min={0}
-                    value={inventory[p.id] ?? 0}
+                    value={inventory[p.id] || ''}
                     onChange={e => handleInventoryChange(p.id, e.target.value)}
                     className="w-full px-3 py-1.5 text-sm font-mono text-right border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
                   />
@@ -461,7 +461,7 @@ export function InputsPage({
                       {pickup > 0 ? pickup : '—'}
                     </div>
                     <input
-                      type="number" min={0} value={warehouse[p.id]?.stock ?? 0}
+                      type="number" min={0} value={warehouse[p.id]?.stock || ''}
                       onChange={e => handleWarehouseStockChange(p.id, e.target.value)}
                       className="w-full px-3 py-1.5 text-sm font-mono text-right border border-stone-200 rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-300"
                     />
@@ -560,7 +560,7 @@ export function InputsPage({
                   <span className="text-right">Cases</span>
                 </div>
                 {products.map(p => {
-                  const val = itemAmounts[p.id] ?? '0'
+                  const val = itemAmounts[p.id] ?? ''
                   const isSet = (parseInt(val) || 0) > 0
                   const isSpread = SPREAD_PRODUCT_IDS.has(p.id)
                   const isEmpako = !isSpread && (itemEmpako[p.id] ?? false)

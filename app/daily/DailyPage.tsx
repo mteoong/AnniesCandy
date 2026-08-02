@@ -16,7 +16,7 @@ import {
 import { Toaster } from '@/components/ui/toast'
 import {
   JOB_COLOR_CONFIG, CANDY_CONFIG, PIECEWISE_PREFIXES, getPiecewiseTypeFromJob,
-  getDailyJobColor, nameInlineFormat,
+  getDailyJobColor, nameTableFormat,
   type Employee, type PayrollConfig, type HolidayType, type PiecewiseType,
 } from '@/lib/types'
 import { useCompany } from '@/lib/company-context'
@@ -100,6 +100,33 @@ function StatusIndicator({ status }: { status: CompletionStatus }) {
   return <span className="w-3.5 h-3.5 rounded-full border-2 border-stone-200 flex-shrink-0" />
 }
 
+// ── Pill toggle — iOS-style segmented control ─────────────────────────────────
+function PillToggle({ options, value, onChange }: {
+  options: { value: string; label: string; activeClass: string }[]
+  value: string
+  onChange: (v: string) => void
+}) {
+  return (
+    <div
+      className="flex items-center p-0.5 rounded-full bg-stone-100 border border-stone-200 gap-0.5 flex-shrink-0"
+      onPointerDown={(e) => e.stopPropagation()}
+    >
+      {options.map((opt) => (
+        <button
+          key={opt.value}
+          onClick={() => onChange(opt.value)}
+          className={cn(
+            'px-2.5 py-1 rounded-full text-xs font-medium font-sans transition-all leading-none cursor-pointer whitespace-nowrap',
+            value === opt.value ? opt.activeClass : 'text-stone-400 hover:text-stone-600',
+          )}
+        >
+          {opt.label}
+        </button>
+      ))}
+    </div>
+  )
+}
+
 // ── Attendance control — stops propagation so clicks don't start a drag ───────
 function AttendanceControl({ value, onChange }: { value: Attendance; onChange: (v: Attendance) => void }) {
   return (
@@ -132,18 +159,29 @@ function AttendanceControl({ value, onChange }: { value: Attendance; onChange: (
 
 // ── Draggable worker row for combo / piecewise cards ──────────────────────────
 function DraggableCandyWorkerRow({
-  worker, isNightShift, attendance, pay, onAttendance,
+  worker, attendance, pay, extra, onAttendance, onExtra, onNightshift,
 }: {
   worker: Employee
-  isNightShift: boolean
   attendance: Attendance
   pay: number
+  extra: number
   onAttendance: (v: Attendance) => void
+  onExtra: (x: number) => void
+  onNightshift: (nightshift: boolean) => void
 }) {
   const { attributes, listeners, setNodeRef, transform, isDragging } = useDraggable({
     id: `worker-${worker.employee_id}`,
     data: { worker },
   })
+  const [extraInput, setExtraInput] = useState(extra === 0 ? '' : extra.toString())
+  const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
+  useEffect(() => setExtraInput(extra === 0 ? '' : extra.toString()), [extra])
+
+  const handleExtraInput = (val: string) => {
+    setExtraInput(val)
+    clearTimeout(debounceRef.current)
+    debounceRef.current = setTimeout(() => onExtra(parseFloat(val) || 0), 500)
+  }
 
   const style = transform ? { transform: CSS.Translate.toString(transform) } : undefined
   const isPresent = attendance === 'present'
@@ -155,39 +193,42 @@ function DraggableCandyWorkerRow({
       {...attributes}
       {...listeners}
       className={cn(
-        'flex items-center gap-2 px-3 py-2 border-b last:border-0 select-none',
+        'flex items-center gap-4 px-4 py-2 border-b border-stone-50 last:border-0 select-none',
         'cursor-grab active:cursor-grabbing transition-colors',
         isDragging && 'opacity-0',
-        isNightShift
-          ? isPresent
-            ? 'bg-emerald-900/30 border-slate-700/40'
-            : attendance === 'absent'
-            ? 'bg-red-900/30 border-slate-700/40'
-            : 'bg-[#2E3155] border-slate-700/40'
-          : isPresent
-          ? 'bg-emerald-50/60 border-stone-50'
-          : attendance === 'absent'
-          ? 'bg-red-100/60 border-stone-50'
-          : 'bg-stone-50/60 border-stone-50',
+        isPresent ? 'bg-emerald-50/60' : attendance === 'absent' ? 'bg-red-50/40' : 'bg-white',
       )}
     >
       <AttendanceControl value={attendance} onChange={onAttendance} />
       <span className={cn(
-        'flex-1 min-w-0 text-xs font-medium font-sans truncate',
-        isNightShift
-          ? isPresent ? 'text-slate-200' : attendance === 'absent' ? 'text-slate-500' : 'text-slate-400'
-          : isPresent ? 'text-stone-700' : attendance === 'absent' ? 'text-stone-500' : 'text-stone-400',
+        'flex-1 min-w-0 text-sm font-medium font-sans truncate',
+        isPresent ? 'text-stone-800' : 'text-stone-400',
       )}>
-        {nameInlineFormat(worker)}
+        {nameTableFormat(worker)}
       </span>
-      <span className={cn(
-        'text-xs font-mono font-semibold flex-shrink-0',
-        isNightShift
-          ? isPresent ? 'text-slate-200' : 'text-slate-600'
-          : isPresent ? 'text-stone-700' : 'text-stone-300',
-      )}>
-        {formatPeso(pay)}
-      </span>
+      <div className="w-[88px] flex justify-center">
+        <PillToggle
+          options={[
+            { value: 'day',   label: 'Day',   activeClass: 'bg-amber-100 text-amber-700 shadow-sm' },
+            { value: 'night', label: 'Night', activeClass: 'bg-violet-100 text-violet-700 shadow-sm' },
+          ]}
+          value={worker.nightshift ? 'night' : 'day'}
+          onChange={(v) => onNightshift(v === 'night')}
+        />
+      </div>
+      <div className="w-24 flex items-center justify-center gap-0.5" onPointerDown={(e) => e.stopPropagation()}>
+        <span className="text-stone-400 text-xs flex-shrink-0">₱</span>
+        <input
+          type="number" value={extraInput} onChange={(e) => handleExtraInput(e.target.value)}
+          min={0}
+          className="w-16 pr-1 py-1 text-sm font-sans text-right rounded-lg border border-stone-200 bg-white text-stone-700 focus:outline-none focus:ring-2 focus:ring-stone-300"
+        />
+      </div>
+      <div className="w-24 text-right">
+        <span className={cn('text-sm font-mono font-semibold', pay > 0 ? 'text-stone-800' : 'text-stone-300')}>
+          {formatPeso(pay)}
+        </span>
+      </div>
     </div>
   )
 }
@@ -293,19 +334,19 @@ function DailyJobCard({
           </span>
         </div>
       </div>
-      <div className="flex items-center gap-3 px-4 py-1.5 bg-stone-50/60 border-b border-stone-50 text-[10px] font-semibold text-stone-400 uppercase tracking-wider font-sans">
-        <span className="w-11" />
+      <div className="flex items-center gap-4 px-4 py-1.5 bg-stone-50/60 border-b border-stone-50 text-[10px] font-semibold text-stone-400 uppercase tracking-wider font-sans">
+        <span className="w-[58px]" />
         <span className="flex-1 min-w-0">Name</span>
-        <span className="w-[72px] text-center">Rate</span>
-        <span className="w-24 text-right">Extra</span>
-        <span className="w-28 text-right">Pay</span>
+        <span className="w-[88px] text-center">Rate</span>
+        <span className="w-[88px] text-center">Shift</span>
+        <span className="w-24 text-center">Extra</span>
+        <span className="w-24 text-right">Pay</span>
       </div>
       {workers.map((worker) => {
         const state = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
         const mult = getDailyMultiplier(state.dailyRate)
-        const extra = state.attendance === 'present' ? state.extra : 0
-        const pay = state.attendance === null ? 0
-          : mult === 0 ? 0
+        const extra = state.extra
+        const pay = mult === 0 ? extra
           : calcDailyPay({ ...worker, daily_salary: worker.daily_salary * mult }, extra, holiday, config)
         return (
           <DailyWorkerRow
@@ -337,9 +378,9 @@ function DailyWorkerRow({
   onExtra: (x: number) => void
   onNightshift: (nightshift: boolean) => void
 }) {
-  const [extraInput, setExtraInput] = useState(state.extra.toString())
+  const [extraInput, setExtraInput] = useState(state.extra === 0 ? '' : state.extra.toString())
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => setExtraInput(state.extra.toString()), [state.extra])
+  useEffect(() => setExtraInput(state.extra === 0 ? '' : state.extra.toString()), [state.extra])
 
   const handleExtra = (val: string) => {
     setExtraInput(val)
@@ -351,72 +392,51 @@ function DailyWorkerRow({
 
   return (
     <div className={cn(
-      'flex items-center gap-3 px-4 py-2.5 border-b border-stone-50 last:border-0 transition-colors',
-      isPresent ? 'bg-emerald-50/60' : state.attendance === 'absent' ? 'bg-red-100/60' : 'bg-stone-50/60',
+      'flex items-center gap-4 px-4 py-2 border-b border-stone-50 last:border-0 transition-colors',
+      isPresent ? 'bg-emerald-50/60' : state.attendance === 'absent' ? 'bg-red-50/40' : 'bg-white',
     )}>
-      {/* Present checkbox */}
-      <button
-        onClick={() => onAttendance(isPresent ? 'absent' : 'present')}
-        className={cn(
-          'w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 transition-colors cursor-pointer',
-          isPresent ? 'bg-emerald-500 border-emerald-500' : 'bg-white border-stone-300 hover:border-stone-400',
-        )}
-      >
-        {isPresent && (
-          <svg width="9" height="7" viewBox="0 0 9 7" fill="none" stroke="white" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-            <path d="M1 3.5l2.5 2.5 4.5-5" />
-          </svg>
-        )}
-      </button>
-      {/* Nightshift checkbox */}
-      <button
-        onClick={() => onNightshift(!worker.nightshift)}
-        className={cn(
-          'w-4 h-4 rounded flex items-center justify-center flex-shrink-0 border-2 transition-colors cursor-pointer',
-          worker.nightshift ? 'bg-slate-700 border-slate-700' : 'bg-white border-stone-300 hover:border-stone-400',
-        )}
-      >
-        {worker.nightshift && (
-          <svg width="8" height="8" viewBox="0 0 24 24" fill="white">
-            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z" />
-          </svg>
-        )}
-      </button>
+      {/* A / P attendance buttons */}
+      <AttendanceControl value={state.attendance} onChange={onAttendance} />
       {/* Name */}
       <span className={cn('flex-1 min-w-0 text-sm font-medium font-sans truncate',
-        isPresent ? 'text-stone-800' : state.attendance === 'absent' ? 'text-stone-500' : 'text-stone-400',
+        isPresent ? 'text-stone-800' : state.attendance === 'absent' ? 'text-stone-400' : 'text-stone-400',
       )}>
-        {nameInlineFormat(worker)}
+        {nameTableFormat(worker)}
       </span>
-      {/* Daily rate selector */}
-      <div className="flex text-[10px] font-mono rounded overflow-hidden border border-stone-200 flex-shrink-0 w-[72px]">
-        {(['0', 'Half', 'Full'] as const).map((r) => (
-          <button
-            key={r}
-            onClick={() => onRate(r)}
-            className={cn(
-              'flex-1 py-0.5 transition-colors leading-none cursor-pointer',
-              state.dailyRate === r ? 'bg-stone-700 text-white' : 'text-stone-400 hover:bg-stone-50',
-            )}
-          >
-            {r === 'Half' ? '½' : r === 'Full' ? '1' : '0'}
-          </button>
-        ))}
+      {/* Rate pill toggle */}
+      <div className="w-[88px] flex justify-center">
+        <PillToggle
+          options={[
+            { value: '0',    label: '0', activeClass: 'bg-red-100 text-red-600 shadow-sm' },
+            { value: 'Half', label: '½', activeClass: 'bg-orange-100 text-orange-600 shadow-sm' },
+            { value: 'Full', label: '1', activeClass: 'bg-emerald-100 text-emerald-700 shadow-sm' },
+          ]}
+          value={state.dailyRate}
+          onChange={(v) => onRate(v as DailyRate)}
+        />
+      </div>
+      {/* Nightshift pill toggle */}
+      <div className="w-[88px] flex justify-center">
+        <PillToggle
+          options={[
+            { value: 'day',   label: 'Day',   activeClass: 'bg-amber-100 text-amber-700 shadow-sm' },
+            { value: 'night', label: 'Night', activeClass: 'bg-violet-100 text-violet-700 shadow-sm' },
+          ]}
+          value={worker.nightshift ? 'night' : 'day'}
+          onChange={(v) => onNightshift(v === 'night')}
+        />
       </div>
       {/* Extra */}
-      <div className="relative w-24">
-        <span className="absolute left-2 top-1/2 -translate-y-1/2 text-stone-400 text-xs">₱</span>
+      <div className="w-24 flex items-center justify-center gap-0.5">
+        <span className="text-stone-400 text-xs flex-shrink-0">₱</span>
         <input
           type="number" value={extraInput} onChange={(e) => handleExtra(e.target.value)}
-          disabled={!isPresent} min={0}
-          className={cn(
-            'w-full pl-5 pr-2 py-1 text-sm font-sans text-right rounded-lg border focus:outline-none focus:ring-2 focus:ring-stone-300',
-            isPresent ? 'bg-white border-stone-200 text-stone-700' : 'bg-stone-100 border-stone-100 text-stone-300 cursor-not-allowed',
-          )}
+          min={0}
+          className="w-16 pr-1 py-1 text-sm font-sans text-right rounded-lg border border-stone-200 bg-white text-stone-700 focus:outline-none focus:ring-2 focus:ring-stone-300"
         />
       </div>
       {/* Pay */}
-      <div className="w-28 text-right">
+      <div className="w-24 text-right">
         {saving
           ? <span className="text-stone-300 text-xs font-mono">saving…</span>
           : <span className={cn('text-sm font-mono font-semibold', pay > 0 ? 'text-stone-800' : 'text-stone-300')}>{formatPeso(pay)}</span>
@@ -429,7 +449,7 @@ function DailyWorkerRow({
 // ── Combo group card ──────────────────────────────────────────────────────────
 function ComboCard({
   jobCode, workers, boxes, workerStates, config, holiday, saving,
-  onBoxes, onAttendance, onMarkAll, onChangeShift,
+  onBoxes, onAttendance, onMarkAll, onChangeShift, onExtra, onNightshift,
 }: {
   jobCode: string; workers: Employee[]; boxes: number
   workerStates: Map<number, WorkerState>; config: PayrollConfig
@@ -438,14 +458,16 @@ function ComboCard({
   onAttendance: (id: number, v: Attendance) => void
   onMarkAll: () => void
   onChangeShift: (toNight: boolean) => void
+  onExtra: (id: number, x: number) => void
+  onNightshift: (worker: Employee, nightshift: boolean) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: jobCode })
   const isNightShift = workers[0]?.nightshift ?? false
   const cfg = CANDY_CONFIG.COMBO
 
-  const [boxInput, setBoxInput] = useState(boxes.toString())
+  const [boxInput, setBoxInput] = useState(boxes === 0 ? '' : boxes.toString())
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => setBoxInput(boxes.toString()), [boxes])
+  useEffect(() => setBoxInput(boxes === 0 ? '' : boxes.toString()), [boxes])
 
   const handleBoxInput = (val: string) => {
     setBoxInput(val)
@@ -460,8 +482,7 @@ function ComboCard({
     <div
       ref={setNodeRef}
       className={cn(
-        'rounded-2xl border shadow-sm overflow-hidden w-64 flex-shrink-0 flex flex-col h-full transition-all duration-150',
-        isNightShift ? 'bg-[#242640] border-[#404578]/60' : 'bg-white border-violet-200',
+        'rounded-2xl border shadow-sm overflow-hidden bg-white border-violet-200 flex flex-col transition-all duration-150',
         isOver && `ring-2 ${cfg.ringColor} ring-offset-2`,
       )}
     >
@@ -472,38 +493,46 @@ function ComboCard({
           <button onClick={onMarkAll} onPointerDown={(e) => e.stopPropagation()} className={cn('text-[10px] font-medium font-sans px-1.5 py-0.5 rounded-md hover:opacity-80 cursor-pointer transition-colors', cfg.badge)}>
             All
           </button>
-          <span className={cn('text-xs font-medium px-1.5 py-0.5 rounded-md font-sans', cfg.badge)}>{workers.length}</span>
+          <span className={cn('text-xs font-medium px-1.5 py-0.5 rounded-md font-sans', cfg.badge)}>{inputtedCount}/{workers.length}</span>
           <GroupDotMenu isNightShift={isNightShift} onChangeShift={onChangeShift} />
         </div>
       </div>
-      <div className={cn('flex items-center gap-2 px-3 py-2.5 border-b', isNightShift ? 'border-[#404578]/40' : 'border-stone-50')}>
-        <label className={cn('text-xs font-sans flex-shrink-0', isNightShift ? 'text-slate-400' : 'text-stone-400')}>Boxes</label>
+      <div className="flex items-center justify-center gap-2 px-3 py-2.5 border-b border-stone-50">
+        <label className="text-xs font-sans flex-shrink-0 text-stone-400">Boxes</label>
         <input
           type="number" value={boxInput} onChange={(e) => handleBoxInput(e.target.value)} min={0}
           onPointerDown={(e) => e.stopPropagation()}
-          className={cn(
-            'flex-1 px-2 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300',
-            isNightShift ? 'bg-[#2E3155] border-[#404578]/60 text-slate-200' : 'bg-white border-stone-200 text-stone-700',
-          )}
+          className="w-32 px-2 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-violet-300 bg-white border-stone-200 text-stone-700"
         />
       </div>
-      <div className={cn('flex flex-col flex-1', isNightShift && !isOver && 'bg-[#242640]', isNightShift && isOver && 'bg-[#2A2E52]')}>
+      <div className="flex items-center gap-4 px-4 py-1.5 bg-stone-50/60 border-b border-stone-50 text-[10px] font-semibold text-stone-400 uppercase tracking-wider font-sans">
+        <span className="w-[58px]" />
+        <span className="flex-1 min-w-0">Name</span>
+        <span className="w-[88px] text-center">Shift</span>
+        <span className="w-24 text-center">Extra</span>
+        <span className="w-24 text-right">Pay</span>
+      </div>
+      <div className="flex flex-col flex-1">
         {workers.length === 0 ? (
-          <div className={cn('flex-1 flex items-center justify-center py-10 text-xs font-sans', isNightShift ? 'text-slate-600' : 'text-stone-300')}>
+          <div className="flex-1 flex items-center justify-center py-10 text-xs font-sans text-stone-300">
             Drag workers here
           </div>
         ) : (
           workers.map((worker) => {
-            const attendance = workerStates.get(worker.employee_id)?.attendance ?? null
-            const pay = attendance === 'present' ? calcComboPay(worker, boxes, presentCount, holiday, config) : 0
+            const state = workerStates.get(worker.employee_id)
+            const attendance = state?.attendance ?? null
+            const extra = state?.extra ?? 0
+            const pay = attendance === 'present' ? calcComboPay(worker, boxes, presentCount, holiday, config) + extra : extra
             return (
               <DraggableCandyWorkerRow
                 key={worker.employee_id}
                 worker={worker}
-                isNightShift={isNightShift}
                 attendance={attendance}
                 pay={pay}
+                extra={extra}
                 onAttendance={(v) => onAttendance(worker.employee_id, v)}
+                onExtra={(x) => onExtra(worker.employee_id, x)}
+                onNightshift={(nightshift) => onNightshift(worker, nightshift)}
               />
             )
           })
@@ -516,7 +545,7 @@ function ComboCard({
 // ── Piecewise group card ──────────────────────────────────────────────────────
 function PiecewiseCard({
   jobCode, type, workers, candy, workerStates, config, holiday, saving,
-  onCandy, onAttendance, onMarkAll, onChangeShift,
+  onCandy, onAttendance, onMarkAll, onChangeShift, onExtra, onNightshift,
 }: {
   jobCode: string; type: PiecewiseType; workers: Employee[]; candy: number
   workerStates: Map<number, WorkerState>; config: PayrollConfig
@@ -525,14 +554,16 @@ function PiecewiseCard({
   onAttendance: (id: number, v: Attendance) => void
   onMarkAll: () => void
   onChangeShift: (toNight: boolean) => void
+  onExtra: (id: number, x: number) => void
+  onNightshift: (worker: Employee, nightshift: boolean) => void
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: jobCode })
   const isNightShift = workers[0]?.nightshift ?? false
   const cfg = CANDY_CONFIG[type === 'JR' ? 'JR' : type === 'COINS' ? 'COINS' : type as 'KING' | 'SP']
 
-  const [candyInput, setCandyInput] = useState(candy.toString())
+  const [candyInput, setCandyInput] = useState(candy === 0 ? '' : candy.toString())
   const debounceRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
-  useEffect(() => setCandyInput(candy.toString()), [candy])
+  useEffect(() => setCandyInput(candy === 0 ? '' : candy.toString()), [candy])
 
   const handleCandyInput = (val: string) => {
     setCandyInput(val)
@@ -543,8 +574,7 @@ function PiecewiseCard({
   const presentCount = workers.filter((w) => workerStates.get(w.employee_id)?.attendance === 'present').length
   const inputtedCount = workers.filter((w) => workerStates.get(w.employee_id)?.attendance !== null).length
 
-  function calcPay(worker: Employee) {
-    if (workerStates.get(worker.employee_id)?.attendance !== 'present') return 0
+  function calcBasePay(worker: Employee) {
     if (type === 'KING' || type === 'JR') return calcKingPay(worker, candy, presentCount, holiday, config)
     if (type === 'SP') return calcSpPay(worker, candy, presentCount, holiday, config)
     return calcCoinsPay(worker, candy, presentCount, holiday, config)
@@ -554,8 +584,7 @@ function PiecewiseCard({
     <div
       ref={setNodeRef}
       className={cn(
-        'rounded-2xl border shadow-sm overflow-hidden w-64 flex-shrink-0 flex flex-col h-full transition-all duration-150',
-        isNightShift ? 'bg-[#242640] border-[#404578]/60' : `bg-white ${cfg.border}`,
+        `rounded-2xl border shadow-sm overflow-hidden bg-white ${cfg.border} flex flex-col transition-all duration-150`,
         isOver && `ring-2 ${cfg.ringColor} ring-offset-2`,
       )}
     >
@@ -566,37 +595,46 @@ function PiecewiseCard({
           <button onClick={onMarkAll} onPointerDown={(e) => e.stopPropagation()} className={cn('text-[10px] font-medium font-sans px-1.5 py-0.5 rounded-md hover:opacity-80 cursor-pointer transition-colors', cfg.badge)}>
             All
           </button>
-          <span className={cn('text-xs font-medium px-1.5 py-0.5 rounded-md font-sans', cfg.badge)}>{workers.length}</span>
+          <span className={cn('text-xs font-medium px-1.5 py-0.5 rounded-md font-sans', cfg.badge)}>{inputtedCount}/{workers.length}</span>
           <GroupDotMenu isNightShift={isNightShift} onChangeShift={onChangeShift} />
         </div>
       </div>
-      <div className={cn('flex items-center gap-2 px-3 py-2.5 border-b', isNightShift ? 'border-[#404578]/40' : 'border-stone-50')}>
-        <label className={cn('text-xs font-sans flex-shrink-0', isNightShift ? 'text-slate-400' : 'text-stone-400')}>Candy</label>
+      <div className="flex items-center justify-center gap-2 px-3 py-2.5 border-b border-stone-50">
+        <label className="text-xs font-sans flex-shrink-0 text-stone-400">Candy</label>
         <input
           type="number" value={candyInput} onChange={(e) => handleCandyInput(e.target.value)} min={0}
           onPointerDown={(e) => e.stopPropagation()}
-          className={cn(
-            'flex-1 px-2 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-200',
-            isNightShift ? 'bg-[#2E3155] border-[#404578]/60 text-slate-200' : 'bg-white border-stone-200 text-stone-700',
-          )}
+          className="w-32 px-2 py-1 text-sm font-mono text-right border rounded-lg focus:outline-none focus:ring-2 focus:ring-stone-200 bg-white border-stone-200 text-stone-700"
         />
       </div>
-      <div className={cn('flex flex-col flex-1', isNightShift && !isOver && 'bg-[#242640]', isNightShift && isOver && 'bg-[#2A2E52]')}>
+      <div className="flex items-center gap-4 px-4 py-1.5 bg-stone-50/60 border-b border-stone-50 text-[10px] font-semibold text-stone-400 uppercase tracking-wider font-sans">
+        <span className="w-[58px]" />
+        <span className="flex-1 min-w-0">Name</span>
+        <span className="w-[88px] text-center">Shift</span>
+        <span className="w-24 text-center">Extra</span>
+        <span className="w-24 text-right">Pay</span>
+      </div>
+      <div className="flex flex-col flex-1">
         {workers.length === 0 ? (
-          <div className={cn('flex-1 flex items-center justify-center py-10 text-xs font-sans', isNightShift ? 'text-slate-600' : 'text-stone-300')}>
+          <div className="flex-1 flex items-center justify-center py-10 text-xs font-sans text-stone-300">
             Drag workers here
           </div>
         ) : (
           workers.map((worker) => {
-            const attendance = workerStates.get(worker.employee_id)?.attendance ?? null
+            const state = workerStates.get(worker.employee_id)
+            const attendance = state?.attendance ?? null
+            const extra = state?.extra ?? 0
+            const pay = attendance === 'present' ? calcBasePay(worker) + extra : extra
             return (
               <DraggableCandyWorkerRow
                 key={worker.employee_id}
                 worker={worker}
-                isNightShift={isNightShift}
                 attendance={attendance}
-                pay={calcPay(worker)}
+                pay={pay}
+                extra={extra}
                 onAttendance={(v) => onAttendance(worker.employee_id, v)}
+                onExtra={(x) => onExtra(worker.employee_id, x)}
+                onNightshift={(nightshift) => onNightshift(worker, nightshift)}
               />
             )
           })
@@ -684,7 +722,7 @@ function WorkerDragOverlay({ worker }: { worker: Employee }) {
   return (
     <div className="bg-white border border-stone-200 shadow-2xl rounded-lg px-3 py-2 w-48 flex items-center gap-2 cursor-grabbing opacity-90">
       <span className="flex-1 text-xs font-medium font-sans text-stone-700 truncate">
-        {nameInlineFormat(worker)}
+        {nameTableFormat(worker)}
       </span>
     </div>
   )
@@ -1008,11 +1046,17 @@ export function DailyPage({
       data.forEach((r: { employee_id: number; daily_pay: number; holiday: HolidayType; pieces: number; job: string; hours: number }) => {
         const dailyRate = rateFromHours(r.hours ?? 8)
         if (r.daily_pay > 0) {
-          const emp = workers.find((e) => e.employee_id === r.employee_id)
-          const mult = getDailyMultiplier(dailyRate)
-          const base = emp ? calcDailyPay({ ...emp, daily_salary: emp.daily_salary * mult }, 0, r.holiday, config) : 0
-          const extra = Math.max(0, r.daily_pay - base)
-          next.set(r.employee_id, { attendance: 'present', extra: Math.round(extra * 100) / 100, dailyRate })
+          const isGroupWorker = r.job && (getPiecewiseTypeFromJob(r.job) !== null || r.job.startsWith('COMBO #'))
+          if (isGroupWorker) {
+            // Group workers: extra is not reconstructed on load (combo/piecewise pay can't be reversed)
+            next.set(r.employee_id, { attendance: 'present', extra: 0, dailyRate: 'Full' })
+          } else {
+            const emp = workers.find((e) => e.employee_id === r.employee_id)
+            const mult = getDailyMultiplier(dailyRate)
+            const base = emp ? calcDailyPay({ ...emp, daily_salary: emp.daily_salary * mult }, 0, r.holiday, config) : 0
+            const extra = Math.max(0, r.daily_pay - base)
+            next.set(r.employee_id, { attendance: 'present', extra: Math.round(extra * 100) / 100, dailyRate })
+          }
           // Reconstruct candy per group: pieces = Math.round(candy / presentCount) per worker,
           // so summing all present workers' pieces gives back ≈ total candy
           if (r.pieces > 0 && r.job && getPiecewiseTypeFromJob(r.job)) {
@@ -1034,12 +1078,13 @@ export function DailyPage({
   // ── Upsert helpers ───────────────────────────────────────────────────────────
   const upsertDailyWorker = useCallback(async (worker: Employee, state: WorkerState, h: HolidayType) => {
     setSavingWorkers((p) => new Set(p).add(worker.employee_id))
-    if (state.attendance === null) {
+    // Only delete if nothing has been set at all
+    if (state.attendance === null && state.dailyRate === '0' && state.extra === 0) {
       await supabase.from('daily_records').delete().match({ employee_id: worker.employee_id, date })
     } else {
       const mult = getDailyMultiplier(state.dailyRate)
-      const extra = state.attendance === 'present' ? state.extra : 0
-      const pay = mult === 0 ? 0 : calcDailyPay({ ...worker, daily_salary: worker.daily_salary * mult }, extra, h, config)
+      const extra = state.extra
+      const pay = mult === 0 ? extra : calcDailyPay({ ...worker, daily_salary: worker.daily_salary * mult }, extra, h, config)
       await supabase.from('daily_records').upsert({
         employee_id: worker.employee_id, date, job: worker.job,
         hours: hoursFromRate(state.dailyRate), pieces: 0,
@@ -1061,7 +1106,7 @@ export function DailyPage({
       await supabase.from('daily_records').upsert(
         toUpsert.map((w) => ({
           employee_id: w.employee_id, date, job: w.job, hours: 8, pieces: 0,
-          daily_pay: states.get(w.employee_id)?.attendance === 'present' ? calcComboPay(w, boxes, presentCount, h, config) : 0,
+          daily_pay: states.get(w.employee_id)?.attendance === 'present' ? calcComboPay(w, boxes, presentCount, h, config) + (states.get(w.employee_id)?.extra ?? 0) : (states.get(w.employee_id)?.extra ?? 0),
           nightshift: w.nightshift, holiday: h,
         })),
         { onConflict: 'employee_id,date' },
@@ -1092,6 +1137,7 @@ export function DailyPage({
             else if (type === 'SP') pay = calcSpPay(w, candy, presentCount, h, config)
             else pay = calcCoinsPay(w, candy, presentCount, h, config)
           }
+          pay += states.get(w.employee_id)?.extra ?? 0
           return {
             employee_id: w.employee_id, date, job: w.job, hours: 8,
             pieces: isPresent ? Math.round(candy / Math.max(presentCount, 1)) : 0,
@@ -1117,14 +1163,15 @@ export function DailyPage({
 
   const handleDailyRate = (worker: Employee, rate: DailyRate) => {
     const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
-    const next = { ...cur, dailyRate: rate }
+    // Promote null → absent so the record gets saved rather than deleted
+    const next = { ...cur, dailyRate: rate, attendance: cur.attendance ?? 'absent' } as WorkerState
     setWorkerStates((m) => new Map(m).set(worker.employee_id, next))
     upsertDailyWorker(worker, next, holiday)
   }
 
   const handleDailyExtra = (worker: Employee, extra: number) => {
     const cur = workerStates.get(worker.employee_id) ?? { attendance: null, extra: 0, dailyRate: '0' as DailyRate }
-    const next = { ...cur, extra }
+    const next = { ...cur, extra, attendance: cur.attendance ?? 'absent' } as WorkerState
     setWorkerStates((m) => new Map(m).set(worker.employee_id, next))
     upsertDailyWorker(worker, next, holiday)
   }
@@ -1190,6 +1237,42 @@ export function DailyPage({
     })
     setWorkerStates(next)
     upsertPiecewiseGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, next, holiday)
+  }
+
+  const handleComboExtra = (jobCode: string, workers: Employee[], empId: number, extra: number) => {
+    const cur = workerStates.get(empId) ?? { attendance: null, extra: 0, dailyRate: 'Full' as DailyRate }
+    const next = new Map(workerStates).set(empId, { ...cur, extra, attendance: cur.attendance ?? 'absent' })
+    setWorkerStates(next)
+    upsertComboGroup(jobCode, workers, boxesMap.get(jobCode) ?? 0, next, holiday)
+  }
+
+  const handlePiecewiseExtra = (jobCode: string, type: PiecewiseType, workers: Employee[], empId: number, extra: number) => {
+    const cur = workerStates.get(empId) ?? { attendance: null, extra: 0, dailyRate: 'Full' as DailyRate }
+    const next = new Map(workerStates).set(empId, { ...cur, extra, attendance: cur.attendance ?? 'absent' })
+    setWorkerStates(next)
+    upsertPiecewiseGroup(jobCode, type, workers, candyMap.get(jobCode) ?? 0, next, holiday)
+  }
+
+  const handleComboWorkerNightshift = async (jobCode: string, groupWorkers: Employee[], worker: Employee, nightshift: boolean) => {
+    const updatedWorker = { ...worker, nightshift }
+    setAllWorkers((prev) => prev.map((w) => w.employee_id === worker.employee_id ? updatedWorker : w))
+    await supabase.from('employees').update({ nightshift }).eq('employee_id', worker.employee_id)
+    const state = workerStates.get(worker.employee_id)
+    if (state?.attendance !== null && state !== undefined) {
+      const updatedWorkers = groupWorkers.map((w) => w.employee_id === worker.employee_id ? updatedWorker : w)
+      await upsertComboGroup(jobCode, updatedWorkers, boxesMap.get(jobCode) ?? 0, workerStates, holiday)
+    }
+  }
+
+  const handlePiecewiseWorkerNightshift = async (jobCode: string, type: PiecewiseType, groupWorkers: Employee[], worker: Employee, nightshift: boolean) => {
+    const updatedWorker = { ...worker, nightshift }
+    setAllWorkers((prev) => prev.map((w) => w.employee_id === worker.employee_id ? updatedWorker : w))
+    await supabase.from('employees').update({ nightshift }).eq('employee_id', worker.employee_id)
+    const state = workerStates.get(worker.employee_id)
+    if (state?.attendance !== null && state !== undefined) {
+      const updatedWorkers = groupWorkers.map((w) => w.employee_id === worker.employee_id ? updatedWorker : w)
+      await upsertPiecewiseGroup(jobCode, type, updatedWorkers, candyMap.get(jobCode) ?? 0, workerStates, holiday)
+    }
   }
 
   const handleHolidayChange = async (h: HolidayType) => {
@@ -1330,9 +1413,9 @@ export function DailyPage({
                         return (comboGroups.size > 0 || ephemerals.length > 0) && (
                           <div>
                             <SectionHeader label="Combo" dot={JOB_COLOR_CONFIG.COMBO.dot} text={JOB_COLOR_CONFIG.COMBO.text} />
-                            <div className="flex flex-wrap gap-4 items-stretch">
+                            <div className="grid grid-cols-2 gap-4">
                               {Array.from(comboGroups.entries()).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([jobCode, workers]) => (
-                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24 flex flex-col">
+                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24">
                                   <ComboCard
                                     jobCode={jobCode} workers={workers} boxes={boxesMap.get(jobCode) ?? 0}
                                     workerStates={workerStates} config={config} holiday={holiday}
@@ -1341,11 +1424,13 @@ export function DailyPage({
                                     onAttendance={(id, v) => handleComboAttendance(jobCode, workers, id, v)}
                                     onMarkAll={() => handleComboMarkAll(jobCode, workers)}
                                     onChangeShift={(toNight) => handleChangeGroupShift(jobCode, toNight)}
+                                    onExtra={(id, x) => handleComboExtra(jobCode, workers, id, x)}
+                                    onNightshift={(worker, nightshift) => handleComboWorkerNightshift(jobCode, workers, worker, nightshift)}
                                   />
                                 </div>
                               ))}
                               {ephemerals.map((jobCode) => (
-                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24 flex flex-col">
+                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24">
                                   <ComboCard
                                     jobCode={jobCode} workers={[]} boxes={0}
                                     workerStates={workerStates} config={config} holiday={holiday}
@@ -1353,6 +1438,7 @@ export function DailyPage({
                                     onBoxes={() => {}} onAttendance={() => {}}
                                     onMarkAll={() => {}}
                                     onChangeShift={(toNight) => handleChangeGroupShift(jobCode, toNight)}
+                                    onExtra={() => {}} onNightshift={() => {}}
                                   />
                                 </div>
                               ))}
@@ -1370,9 +1456,9 @@ export function DailyPage({
                         return (
                           <div key={type}>
                             <SectionHeader label={SECTION_LABELS[type]} dot={cfg.dot} text={cfg.text} />
-                            <div className="flex flex-wrap gap-4 items-stretch">
+                            <div className="grid grid-cols-2 gap-4">
                               {byJob && Array.from(byJob.entries()).sort(([a], [b]) => a.localeCompare(b, undefined, { numeric: true })).map(([jobCode, workers]) => (
-                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24 flex flex-col">
+                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24">
                                   <PiecewiseCard
                                     jobCode={jobCode} type={type} workers={workers}
                                     candy={candyMap.get(jobCode) ?? 0}
@@ -1382,11 +1468,13 @@ export function DailyPage({
                                     onAttendance={(id, v) => handlePiecewiseAttendance(jobCode, type, workers, id, v)}
                                     onMarkAll={() => handlePiecewiseMarkAll(jobCode, type, workers)}
                                     onChangeShift={(toNight) => handleChangeGroupShift(jobCode, toNight)}
+                                    onExtra={(id, x) => handlePiecewiseExtra(jobCode, type, workers, id, x)}
+                                    onNightshift={(worker, nightshift) => handlePiecewiseWorkerNightshift(jobCode, type, workers, worker, nightshift)}
                                   />
                                 </div>
                               ))}
                               {ephemerals.map((jobCode) => (
-                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24 flex flex-col">
+                                <div key={jobCode} id={toScrollId(selectedCompany, jobCode)} className="scroll-mt-24">
                                   <PiecewiseCard
                                     jobCode={jobCode} type={type} workers={[]}
                                     candy={0}
@@ -1395,6 +1483,7 @@ export function DailyPage({
                                     onCandy={() => {}} onAttendance={() => {}}
                                     onMarkAll={() => {}}
                                     onChangeShift={(toNight) => handleChangeGroupShift(jobCode, toNight)}
+                                    onExtra={() => {}} onNightshift={() => {}}
                                   />
                                 </div>
                               ))}
